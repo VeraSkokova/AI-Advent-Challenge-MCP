@@ -1,9 +1,8 @@
 plugins {
-    kotlin("jvm") version "2.0.0" // или 1.9.22
-    application
+    kotlin("jvm") version "2.2.20"
 }
 
-group = "ru.skokova"
+group = "ru.skokova.aiadventchallenge"
 version = "1.0-SNAPSHOT"
 
 repositories {
@@ -11,16 +10,25 @@ repositories {
 }
 
 dependencies {
+    // Ktor Client
+    implementation("io.ktor:ktor-client-core:2.3.7")
+    implementation("io.ktor:ktor-client-cio:2.3.7")
+    implementation("io.ktor:ktor-client-content-negotiation:2.3.7")
+
+    // Логирование Ktor (опционально)
+    implementation("io.ktor:ktor-client-logging:2.3.7")
+    implementation("org.slf4j:slf4j-simple:2.0.9")
+
     implementation("io.modelcontextprotocol:kotlin-sdk:0.7.4")
-    implementation("io.ktor:ktor-client-cio:3.0.0")
+
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+
     testImplementation(kotlin("test"))
 }
 
 tasks.test {
     useJUnitPlatform()
 }
-
-application {
-    mainClass.set("MainKt")
+kotlin {
+    jvmToolchain(17)
 }
