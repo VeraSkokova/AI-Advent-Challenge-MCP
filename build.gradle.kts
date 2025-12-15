@@ -1,5 +1,6 @@
 plugins {
     kotlin("jvm") version "2.2.20"
+    id("application")
 }
 
 group = "ru.skokova.aiadventchallenge"
@@ -24,6 +25,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 
     testImplementation(kotlin("test"))
+}
+
+application {
+    mainClass.set("ru.skokova.aiadventchallenge.MainKt")
 }
 
 tasks.test {
