@@ -1,62 +1,86 @@
-# 🎄 AI Advent Challenge — Day 11: Connecting to MCP
+# 🎄 AI Advent Challenge: Day 12 — Crypto Agent with MCP
 
-В этом задании реализовано подключение Kotlin-клиента к **Model Context Protocol (MCP)** серверу через стандартный ввод-вывод (Stdio).
+Этот проект выполнен в рамках AI Advent Challenge. Цель задания — разработать консольного AI-агента, который использует **Model Context Protocol (MCP)** для безопасного и стандартизированного взаимодействия LLM с внешними инструментами.
 
-В качестве тестового сервера используется эталонный **Filesystem Server** (`@modelcontextprotocol/server-filesystem`), запускаемый через `npx`.
+В качестве LLM используется **YandexGPT**, а в качестве внешнего инструмента — сервис **CoinCap API** для получения курсов криптовалют [conversation_history:1].
 
-## 📋 Задание
-1. Установить MCP SDK для Kotlin.
-2. Поднять MCP-сервер (локальный вариант через stdio).
-3. Написать код, который создает соединение и получает список доступных инструментов (Tools).
+---
 
-## 🛠 Технологии
-- **Language:** Kotlin 2.0+
-- **Build System:** Gradle (Kotlin DSL)
-- **Libraries:**
-    - `io.modelcontextprotocol:kotlin-sdk` (Official SDK)
-    - `io.ktor:ktor-client-cio` (HTTP Client engine)
-    - `kotlinx-coroutines`
-- **External Tools:** Node.js & npx (для запуска JS-based MCP серверов)
+## 🎓 Чему учит этот проект (Theory & Skills)
+
+Этот проект выходит за рамки простого чат-бота и демонстрирует архитектурные паттерны построения современных **агентных систем**.
+
+### 1. Архитектура AI-Агентов (Agentic Patterns)
+Реализован классический цикл работы агента **ReAct (Reason + Act)**:
+*   **Thought:** LLM анализирует запрос и принимает решение о необходимости действия.
+*   **Action:** Программа парсит структурированный ответ (JSON) и вызывает внешний код.
+*   **Observation:** Результат выполнения инструмента возвращается обратно в контекст модели.
+*   **Response:** LLM генерирует финальный ответ на основе новых данных [conversation_history:3].
+
+### 2. Model Context Protocol (MCP)
+На практике применен стандарт **MCP**, унифицирующий подключение инструментов к LLM.
+*   Вместо жесткой связи ("хардкода") логика инструментов вынесена в независимый **MCP-сервер**.
+*   Использован транспорт **Stdio**: обмен данными происходит через стандартные потоки ввода-вывода (`stdin`/`stdout`), что реализует паттерн **IPC (Inter-Process Communication)** [conversation_history:4].
+
+### 3. Управление контекстом (Prompt Engineering & History Hacking)
+Проект показывает, что память LLM — это управляемый ресурс.
+*   **System Prompting:** Четкие инструкции для модели ("верни JSON", "используй английские названия") [conversation_history:2].
+*   **History Hacking:** Техника подмены истории диалога. Мы скрываем от модели технические JSON-ответы, заменяя их на описание действий ("Я проверю цену..."). Это предотвращает "застревание" модели в генерации кода и заставляет её возвращаться к естественному языку [conversation_history:3].
+
+### 4. Инженерия на Kotlin
+*   **ProcessBuilder:** Управление жизненным циклом дочерних Java-процессов.
+*   **Ktor Client Engines:** Работа с сетевыми движками (CIO vs Java) и решение проблем с DNS/VPN [conversation_history:5].
+*   **Resilient Parsing:** Обработка нестабильных контрактов API (JSON serialization) и безопасный парсинг данных [conversation_history:6].
+
+---
+
+## ⚙️ Архитектура
+
+Система состоит из двух изолированных процессов:
+
+1.  **Agent (Host Process):** Основное приложение, которое общается с пользователем и YandexGPT.
+2.  **Server (Child Process):** Изолированный процесс, предоставляющий инструменты (Tools) по протоколу MCP.
+---
 
 ## 🚀 Как запустить
 
 ### Предварительные требования
-1. **JDK 17+** установлен.
-2. **Node.js** установлен (проверьте командой `node -v` и `npx -v`).
-    - *Важно для Windows:* При установке Node.js убедитесь, что выбрана опция "Add to PATH".
+*   JDK 17+
+*   Аккаунт Yandex Cloud (API Key + Folder ID)
 
-### Запуск из IntelliJ IDEA
-1. Откройте файл `src/main/kotlin/ru/skokova/aiadventchallenge/Day11McpTest.kt`.
-2. Нажмите зеленую иконку **Run** (▶) рядом с функцией `main`.
+### Установка
 
-### Запуск через Gradle
-./gradlew run
+1.  **Клонируйте репозиторий:**
+    ```
+    git clone <your-repo-url>
+    ```
 
-text
+2.  **Настройте ключи:**
+    Создайте файл `config.properties` в корне проекта (он добавлен в `.gitignore`):
+    ```
+    YANDEX_GPT_API_KEY=ваш_ключ
+    YANDEX_GPT_FOLDER_ID=ваш_folder_id
+    ```
 
-## 🧩 Реализация
+3.  **Соберите MCP-сервер:**
+    Агенту нужен собранный JAR-файл сервера для запуска подпроцесса.
+    ```
+    ./gradlew shadowJar
+    ```
+    *Убедитесь, что файл появился по пути `build/libs/ai-advent-mcp-1.0-SNAPSHOT-all.jar`.*
 
-Код выполняет следующие действия:
-1. **Запуск подпроцесса:** Автоматически запускает команду `npx -y @modelcontextprotocol/server-filesystem .` через `ProcessBuilder`.
-2. **Транспорт:** Инициализирует `StdioClientTransport`, связывая потоки ввода/вывода процесса с клиентом.
-    - *Fix:* Использует `asSource().buffered()` и `asSink().buffered()` из `kotlinx-io` для корректной работы с потоками.
-3. **Handshake:** Метод `client.connect()` автоматически выполняет инициализацию протокола (отправляет `initialize` и ожидает `initialized`).
-4. **Запрос:** Метод `client.listTools()` запрашивает у сервера доступные инструменты.
+4.  **Запустите Агента:**
+    Запустите функцию `main()` в файле `src/main/kotlin/Main.kt`.
 
-## ✅ Ожидаемый результат
+### Пример работы
 
-В консоли должен появиться список инструментов для работы с файловой системой:
+💬 Введите запрос (например: 'Цена биткоина?'):
 
-🎄 AI Advent Challenge - Day 11
-🚀 Starting MCP Server process...
-🔄 Connecting...
-✅ Connected!
+Цена биткоина
 
-🎉 === AVAILABLE MCP TOOLS === 🎉
-🛠 read_file
-📝 Read the complete contents of a file from the file system.
-🛠 read_multiple_files
-📝 Read multiple files from the file system.
-🛠 write_file
-📝 Create a new file or completely overwrite an existing file.
-...
+🤖 Думаю...
+⚙️ Calling Tool...
+? Tool called: get_crypto_price
+🔧 Tool Output: Цена BTC (bitcoin): $87394.74
+
+🤖 Ответ: Цена биткоина на данный момент составляет $87394.74.
