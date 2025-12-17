@@ -1,12 +1,9 @@
 package ru.skokova.aiadventchallenge.mcp
 
-import io.modelcontextprotocol.kotlin.sdk.Implementation
-import io.modelcontextprotocol.kotlin.sdk.ServerCapabilities
-import io.modelcontextprotocol.kotlin.sdk.ServerOptions
+import io.modelcontextprotocol.kotlin.sdk.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
-import io.modelcontextprotocol.kotlin.sdk.shared.CallToolResult
-import io.modelcontextprotocol.kotlin.sdk.shared.TextContent
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
 import ru.skokova.aiadventchallenge.coincap.CoinCapClient
 import ru.skokova.aiadventchallenge.scheduler.CronParser
@@ -19,7 +16,7 @@ import java.time.format.DateTimeFormatter
 /**
  * MCP Server для управления напоминаниями с интеграцией CoinCap
  *
- * Предоставляет 5 tools:
+ * Предоставляет 5 MCP tools:
  * 1. add_reminder - Создать напоминание
  * 2. list_reminders - Показать список
  * 3. remove_reminder - Удалить
@@ -36,7 +33,7 @@ class ReminderMCPServer(
         serverInfo = Implementation(name = "reminder-server", version = "1.0.0"),
         options = ServerOptions(
             capabilities = ServerCapabilities(
-                tools = ServerCapabilities.Tool
+                tools = ServerCapabilities.Tools(listChanged = true)
             )
         )
     ).apply {
@@ -50,31 +47,29 @@ class ReminderMCPServer(
         addTool(
             name = "add_reminder",
             description = "Создать новое напоминание с cron-расписанием",
-            inputSchema = mapOf(
-                "type" to "object",
-                "properties" to mapOf(
-                    "title" to mapOf(
-                        "type" to "string",
-                        "description" to "Название напоминания"
-                    ),
-                    "command" to mapOf(
-                        "type" to "string",
-                        "description" to "Команда для AI-агента при выполнении"
-                    ),
-                    "cronExpression" to mapOf(
-                        "type" to "string",
-                        "description" to "Cron выражение (например: '0 9 * * *' для 9:00)"
-                    )
-                ),
-                "required" to listOf("title", "command", "cronExpression")
+            inputSchema = Tool.Input(
+                properties = buildJsonObject {
+                    putJsonObject("title") {
+                        put("type", "string")
+                        put("description", "Название напоминания")
+                    }
+                    putJsonObject("command") {
+                        put("type", "string")
+                        put("description", "Команда для AI-агента")
+                    }
+                    putJsonObject("cronExpression") {
+                        put("type", "string")
+                        put("description", "Cron выражение")
+                    }
+                },
+                required = listOf("title", "command", "cronExpression")
             )
         ) { request ->
             try {
-                val title = request.arguments["title"] as String
-                val command = request.arguments["command"] as String
-                val cron = request.arguments["cronExpression"] as String
+                val title = request.arguments["title"]?.jsonPrimitive?.content ?: ""
+                val command = request.arguments["command"]?.jsonPrimitive?.content ?: ""
+                val cron = request.arguments["cronExpression"]?.jsonPrimitive?.content ?: ""
                 
-                // Валидируем cron выражение
                 if (!CronParser.isValid(cron)) {
                     return@addTool CallToolResult(
                         content = listOf(TextContent(text = "⚠️ Невалидное cron выражение: $cron")),
@@ -83,7 +78,7 @@ class ReminderMCPServer(
                 }
                 
                 val nextExec = CronParser.calculateNext(cron, System.currentTimeMillis())
-                    ?: throw IllegalArgumentException("Invalid cron expression: $cron")
+                    ?: throw IllegalArgumentException("Invalid cron: $cron")
                 
                 val reminder = Reminder(
                     title = title,
@@ -96,11 +91,7 @@ class ReminderMCPServer(
                 logger.info("✓ Created reminder: ${reminder.id.take(8)} - $title")
                 
                 CallToolResult(
-                    content = listOf(
-                        TextContent(
-                            text = "✓ Напоминание '${title}' создано (ID: ${reminder.id.take(8)})"
-                        )
-                    )
+                    content = listOf(TextContent(text = "✓ Напоминание '$title' создано"))
                 )
             } catch (e: Exception) {
                 logger.error("Error in add_reminder", e)
@@ -117,19 +108,18 @@ class ReminderMCPServer(
         addTool(
             name = "list_reminders",
             description = "Получить список напоминаний",
-            inputSchema = mapOf(
-                "type" to "object",
-                "properties" to mapOf(
-                    "status" to mapOf(
-                        "type" to "string",
-                        "enum" to listOf("active", "all"),
-                        "description" to "Фильтр по статусу"
-                    )
-                )
+            inputSchema = Tool.Input(
+                properties = buildJsonObject {
+                    putJsonObject("status") {
+                        put("type", "string")
+                        put("description", "Фильтр: active или all")
+                    }
+                },
+                required = listOf()
             )
         ) { request ->
             try {
-                val status = request.arguments["status"] as? String ?: "active"
+                val status = request.arguments["status"]?.jsonPrimitive?.content ?: "active"
                 val reminders = runBlocking {
                     when (status) {
                         "active" -> storage.loadAll().filter { it.enabled }
@@ -149,15 +139,12 @@ class ReminderMCPServer(
                         Instant.ofEpochMilli(it)
                             .atZone(ZoneId.systemDefault())
                             .format(formatter)
-                    } ?: "не запланировано"
-                    
-                    "• ${reminder.title} (${reminder.cronExpression}) - следующее: $nextTime"
+                    } ?: "н/а"
+                    "• ${reminder.title} (${reminder.cronExpression}) → $nextTime"
                 }
                 
                 CallToolResult(
-                    content = listOf(
-                        TextContent(text = "Напоминания ($status):\n$list")
-                    )
+                    content = listOf(TextContent(text = "Напоминания:\n$list"))
                 )
             } catch (e: Exception) {
                 logger.error("Error in list_reminders", e)
@@ -169,29 +156,28 @@ class ReminderMCPServer(
         }
         
         // ═══════════════════════════════════════════════════════════════
-        // TOOL 3: Удаление напоминания
+        // TOOL 3: Удаление
         // ═══════════════════════════════════════════════════════════════
         addTool(
             name = "remove_reminder",
-            description = "Удалить напоминание по ID",
-            inputSchema = mapOf(
-                "type" to "object",
-                "properties" to mapOf(
-                    "id" to mapOf(
-                        "type" to "string",
-                        "description" to "ID напоминания"
-                    )
-                ),
-                "required" to listOf("id")
+            description = "Удалить напоминание",
+            inputSchema = Tool.Input(
+                properties = buildJsonObject {
+                    putJsonObject("id") {
+                        put("type", "string")
+                        put("description", "ID напоминания")
+                    }
+                },
+                required = listOf("id")
             )
         ) { request ->
             try {
-                val id = request.arguments["id"] as String
+                val id = request.arguments["id"]?.jsonPrimitive?.content ?: ""
                 runBlocking { storage.remove(id) }
-                logger.info("✓ Removed reminder: ${id.take(8)}")
+                logger.info("✓ Removed: ${id.take(8)}")
                 
                 CallToolResult(
-                    content = listOf(TextContent(text = "✓ Напоминание удалено"))
+                    content = listOf(TextContent(text = "✓ Удалено"))
                 )
             } catch (e: Exception) {
                 logger.error("Error in remove_reminder", e)
@@ -207,12 +193,12 @@ class ReminderMCPServer(
         // ═══════════════════════════════════════════════════════════════
         addTool(
             name = "get_stats",
-            description = "Получить статистику выполнения задач",
-            inputSchema = mapOf(
-                "type" to "object",
-                "properties" to emptyMap<String, Any>()
+            description = "Статистика выполнения",
+            inputSchema = Tool.Input(
+                properties = buildJsonObject { },
+                required = listOf()
             )
-        ) { request ->
+        ) { _ ->
             try {
                 val reminders = runBlocking { storage.loadAll() }
                 val active = reminders.count { it.enabled }
@@ -221,9 +207,9 @@ class ReminderMCPServer(
                 
                 val stats = """
                     📊 Статистика:
-                    • Всего напоминаний: $total
+                    • Всего: $total
                     • Активных: $active
-                    • Выполнено хотя бы раз: $executed
+                    • Выполнено: $executed
                 """.trimIndent()
                 
                 CallToolResult(content = listOf(TextContent(text = stats)))
@@ -237,34 +223,33 @@ class ReminderMCPServer(
         }
         
         // ═══════════════════════════════════════════════════════════════
-        // TOOL 5: Проверка курсов криптовалют
+        // TOOL 5: Криптокурсы
         // ═══════════════════════════════════════════════════════════════
         addTool(
             name = "check_crypto_rates",
-            description = "Получить текущие курсы криптовалют",
-            inputSchema = mapOf(
-                "type" to "object",
-                "properties" to mapOf(
-                    "coins" to mapOf(
-                        "type" to "array",
-                        "items" to mapOf("type" to "string"),
-                        "description" to "Список монет: bitcoin, ethereum и т.д."
-                    )
-                ),
-                "required" to listOf("coins")
+            description = "Курсы криптовалют",
+            inputSchema = Tool.Input(
+                properties = buildJsonObject {
+                    putJsonObject("coins") {
+                        put("type", "array")
+                        putJsonObject("items") {
+                            put("type", "string")
+                        }
+                        put("description", "Список монет")
+                    }
+                },
+                required = listOf("coins")
             )
         ) { request ->
             try {
-                @Suppress("UNCHECKED_CAST")
-                val coins = (request.arguments["coins"] as List<*>).map { it.toString() }
+                val coinsArray = request.arguments["coins"]?.jsonArray
+                val coins = coinsArray?.map { it.jsonPrimitive.content } ?: emptyList()
                 
                 val rates = runBlocking { coinCapClient.getRates(coins) }
                 
                 if (rates.isEmpty()) {
                     return@addTool CallToolResult(
-                        content = listOf(
-                            TextContent(text = "⚠️ Не удалось получить курсы для указанных монет")
-                        )
+                        content = listOf(TextContent(text = "⚠️ Не удалось получить курсы"))
                     )
                 }
                 
@@ -273,9 +258,7 @@ class ReminderMCPServer(
                 }
                 
                 CallToolResult(
-                    content = listOf(
-                        TextContent(text = "💰 Курсы криптовалют:\n$formatted")
-                    )
+                    content = listOf(TextContent(text = "💰 Курсы:\n$formatted"))
                 )
             } catch (e: Exception) {
                 logger.error("Error in check_crypto_rates", e)
@@ -286,6 +269,6 @@ class ReminderMCPServer(
             }
         }
         
-        logger.info("✓ All 5 MCP tools registered successfully")
+        logger.info("✓ All 5 MCP tools registered")
     }
 }
