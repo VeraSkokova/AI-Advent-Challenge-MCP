@@ -11,7 +11,7 @@ import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 
 /**
- * Модели ответа CoinCap API
+ * Модели ответа CoinCap API v3
  */
 @Serializable
 data class CoinCapResponse(
@@ -22,13 +22,12 @@ data class CoinCapResponse(
 data class CryptoData(
     val id: String,
     val symbol: String,
-    val priceUsd: String,
-    val changePercent24Hr: String? = null
+    val priceUsd: String
 )
 
 /**
  * Клиент для работы с CoinCap API v3
- * API Docs: https://docs.coincap.io/
+ * API: https://rest.coincap.io/v3/assets
  *
  * @property apiKey API ключ для CoinCap (опционально, но увеличивает rate limits)
  */
@@ -69,7 +68,7 @@ class CoinCapClient(private val apiKey: String? = null) {
      */
     suspend fun getCryptoPrice(assetId: String): Double? {
         return try {
-            val response: CoinCapResponse = httpClient.get("https://api.coincap.io/v2/assets") {
+            val response: CoinCapResponse = httpClient.get("https://rest.coincap.io/v3/assets") {
                 parameter("search", assetId)
                 parameter("limit", 1)
                 if (apiKey != null) {
@@ -90,7 +89,7 @@ class CoinCapClient(private val apiKey: String? = null) {
      */
     suspend fun getCryptoDetails(assetId: String): String {
         return try {
-            val response: CoinCapResponse = httpClient.get("https://api.coincap.io/v2/assets") {
+            val response: CoinCapResponse = httpClient.get("https://rest.coincap.io/v3/assets") {
                 parameter("search", assetId)
                 parameter("limit", 1)
                 if (apiKey != null) {
@@ -100,12 +99,7 @@ class CoinCapClient(private val apiKey: String? = null) {
             
             val asset = response.data.firstOrNull()
             if (asset != null) {
-                val price = String.format("%.2f", asset.priceUsd.toDouble())
-                val change = asset.changePercent24Hr?.let { 
-                    String.format("%.2f", it.toDouble())
-                } ?: "N/A"
-                
-                "Цена ${asset.symbol.uppercase()} (${asset.id}): $$price (24h: ${change}%)"
+                "Цена ${asset.symbol} (${asset.id}): $${String.format("%.2f", asset.priceUsd.toDouble())}"
             } else {
                 "Криптовалюта '$assetId' не найдена."
             }

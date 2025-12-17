@@ -41,11 +41,12 @@ data class ToolCallData(
  *
  * Workflow:
  * 1. Получает текстовую команду (например: "Проверь курсы BTC и ETH")
- * 2. Отправляет в YandexGPT с описанием доступных tools
- * 3. Парсит JSON ответ с tool calls
- * 4. Выполняет tools через MCP Server
- * 5. Отправляет результаты обратно в YandexGPT для генерации summary
- * 6. Возвращает human-readable summary для notification
+ * 2. Динамически получает список доступных tools из MCP Server
+ * 3. Отправляет в YandexGPT с описанием доступных tools
+ * 4. Парсит JSON ответ с tool calls
+ * 5. Выполняет tools через MCP Server
+ * 6. Отправляет результаты обратно в YandexGPT для генерации summary
+ * 7. Возвращает human-readable summary для notification
  */
 class YandexAIAgent(
     private val apiKey: String,
@@ -62,10 +63,20 @@ class YandexAIAgent(
     suspend fun executeCommand(command: String): AgentResponse {
         logger.info("🤖 Processing command: $command")
         
-        // ШАГ 1: Строим system prompt с описанием tools
-        val systemPrompt = buildSystemPrompt()
+        // ШАГ 1: Получаем список доступных tools динамически
+        val availableTools = try {
+            mcpServer.listTools()
+        } catch (e: Exception) {
+            logger.error("Failed to get tools from MCP Server", e)
+            emptyList()
+        }
         
-        // ШАГ 2: Отправляем команду в YandexGPT
+        logger.info("📋 Available tools: ${availableTools.map { it.name }}")
+        
+        // ШАГ 2: Строим system prompt с описанием tools
+        val systemPrompt = buildSystemPrompt(availableTools)
+        
+        // ШАГ 3: Отправляем команду в YandexGPT
         val firstResponse = yandexGPTClient.chat(
             systemPrompt = systemPrompt,
             userMessage = command
@@ -73,7 +84,7 @@ class YandexAIAgent(
         
         logger.info("📝 YandexGPT response: ${firstResponse.take(200)}...")
         
-        // ШАГ 3: Парсим tool calls
+        // ШАГ 4: Парсим tool calls
         val toolCalls = parseToolCalls(firstResponse)
         
         if (toolCalls.isEmpty()) {
@@ -86,7 +97,7 @@ class YandexAIAgent(
         
         logger.info("🔧 Executing ${toolCalls.size} tool call(s)")
         
-        // ШАГ 4: Выполняем все tools
+        // ШАГ 5: Выполняем все tools
         val executedCalls = mutableListOf<ToolCall>()
         val rawResults = mutableMapOf<String, Any>()
         
@@ -103,7 +114,7 @@ class YandexAIAgent(
             }
         }
         
-        // ШАГ 5: Генерируем summary через YandexGPT
+        // ШАГ 6: Генерируем summary через YandexGPT
         val resultsContext = buildResultsContext(executedCalls)
         val summaryPrompt = """
             Ты выполнил команду пользователя: "$command"
@@ -152,22 +163,24 @@ class YandexAIAgent(
     
     /**
      * Построить system prompt с описанием доступных tools
+     * Tools получаются динамически из MCP Server
      */
-    private fun buildSystemPrompt(): String {
+    private fun buildSystemPrompt(tools: List<io.modelcontextprotocol.kotlin.sdk.Tool>): String {
+        val toolDescriptions = if (tools.isNotEmpty()) {
+            tools.joinToString("\n") { tool ->
+                val params = tool.inputSchema?.get("properties") as? Map<*, *>
+                val paramsList = params?.keys?.joinToString(", ") { "$it" } ?: "нет параметров"
+                "- ${tool.name}: ${tool.description}\n  Параметры: $paramsList"
+            }
+        } else {
+            "(Нет доступных инструментов)"
+        }
+        
         return """
             Ты - AI ассистент для управления напоминаниями и задачами.
             
             У тебя есть доступ к следующим инструментам (MCP tools):
-            - add_reminder: Создать новое напоминание с cron-расписанием
-              Параметры: title (string), command (string), cronExpression (string)
-            - list_reminders: Получить список напоминаний
-              Параметры: status ("active" или "all")
-            - remove_reminder: Удалить напоминание по ID
-              Параметры: id (string)
-            - get_stats: Получить статистику выполнения задач
-              Параметры: нет
-            - check_crypto_rates: Получить текущие курсы криптовалют
-              Параметры: coins (array of strings, например ["bitcoin", "ethereum"])
+            $toolDescriptions
             
             Когда пользователь даёт команду:
             1. Проанализируй, какие инструменты нужны
