@@ -32,17 +32,37 @@ class ReminderStorage(
     /**
      * Сохранить новое напоминание
      */
-    suspend fun save(reminder: Reminder) = mutex.withLock {
-        val reminders = loadAll().toMutableList()
-        reminders.add(reminder)
-        storageFile.writeText(json.encodeToString(reminders))
-        logger.info("✓ Reminder saved: ${reminder.id.take(8)} - ${reminder.title}")
+    suspend fun save(reminder: Reminder) {
+        logger.debug("🔒 Acquiring lock for save()...")
+        mutex.withLock {
+            logger.debug("🔓 Lock acquired, loading existing reminders...")
+            val reminders = loadAllUnsafe().toMutableList()
+            logger.debug("📊 Current reminders count: ${reminders.size}")
+            
+            reminders.add(reminder)
+            logger.debug("➕ Added new reminder, total: ${reminders.size}")
+            
+            val jsonContent = json.encodeToString(reminders)
+            logger.debug("📝 Writing to file: ${storageFile.absolutePath}")
+            
+            storageFile.writeText(jsonContent)
+            logger.info("✓ Reminder saved: ${reminder.id.take(8)} - ${reminder.title}")
+            logger.debug("📁 File size: ${storageFile.length()} bytes")
+        }
+        logger.debug("🔓 Lock released")
     }
     
     /**
      * Загрузить все напоминания
      */
     suspend fun loadAll(): List<Reminder> = mutex.withLock {
+        loadAllUnsafe()
+    }
+    
+    /**
+     * Загрузить без блокировки (используется внутри mutex.withLock)
+     */
+    private fun loadAllUnsafe(): List<Reminder> {
         if (!storageFile.exists()) {
             logger.debug("Storage file does not exist, returning empty list")
             return emptyList()
@@ -54,10 +74,10 @@ class ReminderStorage(
                 logger.debug("Storage file is empty, returning empty list")
                 return emptyList()
             }
-            json.decodeFromString<List<Reminder>>(content)
+            return json.decodeFromString<List<Reminder>>(content)
         } catch (e: Exception) {
             logger.error("Error loading reminders from storage", e)
-            emptyList()
+            return emptyList()
         }
     }
     
@@ -74,7 +94,7 @@ class ReminderStorage(
      * Обновить время выполнения и рассчитать следующее
      */
     suspend fun updateExecution(id: String, executedAt: Long) = mutex.withLock {
-        val reminders = loadAll().map { reminder ->
+        val reminders = loadAllUnsafe().map { reminder ->
             if (reminder.id == id) {
                 val nextExec = CronParser.calculateNext(
                     reminder.cronExpression,
@@ -96,7 +116,7 @@ class ReminderStorage(
      * Удалить напоминание по ID
      */
     suspend fun remove(id: String) = mutex.withLock {
-        val reminders = loadAll().filter { it.id != id }
+        val reminders = loadAllUnsafe().filter { it.id != id }
         storageFile.writeText(json.encodeToString(reminders))
         logger.info("✓ Removed reminder: ${id.take(8)}")
     }
@@ -105,7 +125,7 @@ class ReminderStorage(
      * Обновить напоминание
      */
     suspend fun update(reminder: Reminder) = mutex.withLock {
-        val reminders = loadAll().map { 
+        val reminders = loadAllUnsafe().map { 
             if (it.id == reminder.id) reminder else it
         }
         storageFile.writeText(json.encodeToString(reminders))
