@@ -62,24 +62,26 @@ fun main() = runBlocking {
     logger.info("═══════════════════════════════════════════")
     
     // CLI интерфейс с BufferedReader
-    println("\nCommands: add | list | test <command> | exit\n")
+    println("\nCommands:")
+    println("  add \"Title\" \"Command\" \"Cron\"  - Добавить напоминание")
+    println("  list                          - Список напоминаний")
+    println("  test <command>                - Тест AI агента")
+    println("  exit                          - Выход\n")
     
     val reader = System.`in`.bufferedReader()
     
     while (true) {
         try {
             print("> ")
-            System.out.flush() // Важно для вывода приглашения
+            System.out.flush()
             
             val input = reader.readLine()
             
-            // Проверяем на null (Ctrl+D / EOF)
             if (input == null) {
                 logger.info("EOF detected, shutting down...")
                 break
             }
             
-            // Пропускаем пустые строки
             if (input.isBlank()) {
                 continue
             }
@@ -92,16 +94,24 @@ fun main() = runBlocking {
                 }
                 
                 input.trim() == "list" -> {
-                    val reminders = storage.loadAll()
+                    val reminders = runBlocking { storage.loadAll() }
                     if (reminders.isEmpty()) {
-                        println("No reminders")
+                        println("❌ No reminders")
                     } else {
+                        println("\n📝 Reminders (${reminders.size}):")
                         reminders.forEach { r ->
                             val next = r.nextExecution?.let {
                                 CronParser.formatTimestamp(it)
                             } ?: "?"
-                            println("  ${r.id.take(8)}: ${r.title} (${r.cronExpression}) → $next")
+                            val status = if (r.enabled) "✅" else "❌"
+                            println("  $status ${r.id.take(8)}: ${r.title}")
+                            println("     Cron: ${r.cronExpression}")
+                            println("     Next: $next")
+                            if (r.lastExecuted != null) {
+                                println("     Last: ${CronParser.formatTimestamp(r.lastExecuted!!)}")
+                            }
                         }
+                        println()
                     }
                 }
                 
@@ -119,33 +129,59 @@ fun main() = runBlocking {
                 }
                 
                 input.trim().startsWith("add ") -> {
-                    // Формат: add "Title" "Command" "0 9 * * *"
-                    val parts = input.trim().removePrefix("add ")
-                        .split("\" \"")
-                        .map { it.trim('"') }
-                    
-                    if (parts.size == 3) {
+                    try {
+                        // Формат: add "Title" "Command" "0 9 * * *"
+                        val parts = input.trim().removePrefix("add ")
+                            .split("\" \"")
+                            .map { it.trim('"') }
+                        
+                        logger.debug("🔍 Parsed parts: $parts (size=${parts.size})")
+                        
+                        if (parts.size != 3) {
+                            println("❌ Invalid format. Use: add \"Title\" \"Command\" \"Cron\"")
+                            println("💡 Example: add \"Крипто\" \"Проверь BTC и ETH\" \"*/1 * * * *\"")
+                            continue
+                        }
+                        
+                        val title = parts[0]
+                        val command = parts[1]
+                        val cronExpr = parts[2]
+                        
+                        // Валидация cron
+                        if (!CronParser.isValid(cronExpr)) {
+                            println("❌ Invalid cron expression: $cronExpr")
+                            println("💡 Examples: */1 * * * * (every minute), 0 * * * * (hourly)")
+                            continue
+                        }
+                        
+                        val nextExec = CronParser.calculateNext(cronExpr, System.currentTimeMillis())
+                        
                         val reminder = Reminder(
-                            title = parts[0],
-                            command = parts[1],
-                            cronExpression = parts[2],
-                            nextExecution = CronParser.calculateNext(parts[2], System.currentTimeMillis())
+                            title = title,
+                            command = command,
+                            cronExpression = cronExpr,
+                            nextExecution = nextExec
                         )
-                        storage.save(reminder)
+                        
+                        runBlocking { storage.save(reminder) }
+                        
                         println("✅ Reminder added: ${reminder.id.take(8)} - ${reminder.title}")
-                    } else {
-                        println("Usage: add \"Title\" \"Command\" \"Cron\"")
-                        println("Example: add \"Крипто\" \"Проверь BTC и ETH\" \"0 * * * *\"")
+                        if (nextExec != null) {
+                            println("⏰ Next execution: ${CronParser.formatTimestamp(nextExec)}")
+                        }
+                    } catch (e: Exception) {
+                        println("❌ Error adding reminder: ${e.message}")
+                        logger.error("Add reminder failed", e)
                     }
                 }
                 
                 else -> {
-                    println("Unknown command. Try: add, list, test, exit")
+                    println("❌ Unknown command. Try: add, list, test, exit")
                 }
             }
         } catch (e: Exception) {
             logger.error("Error processing command", e)
-            println("Error: ${e.message}")
+            println("❌ Error: ${e.message}")
         }
     }
     
