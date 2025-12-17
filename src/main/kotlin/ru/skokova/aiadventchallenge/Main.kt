@@ -88,7 +88,6 @@ fun main() = runBlocking {
             }
             
             val trimmed = input.trim()
-            println("[DEBUG] Got input: '$trimmed'") // DEBUG
             
             when {
                 trimmed == "exit" -> {
@@ -98,8 +97,7 @@ fun main() = runBlocking {
                 }
                 
                 trimmed == "list" -> {
-                    println("[DEBUG] Executing list command") // DEBUG
-                    val reminders = runBlocking { storage.loadAll() }
+                    val reminders = storage.loadAll() // Прямой вызов suspend функции
                     if (reminders.isEmpty()) {
                         println("❌ No reminders")
                     } else {
@@ -134,14 +132,10 @@ fun main() = runBlocking {
                 }
                 
                 trimmed.startsWith("add ") -> {
-                    println("[DEBUG] Executing add command") // DEBUG
                     try {
                         // Формат: add Title|Command|Cron
                         val content = trimmed.removePrefix("add ").trim()
-                        println("[DEBUG] Content: '$content'") // DEBUG
-                        
                         val parts = content.split("|").map { it.trim() }
-                        println("[DEBUG] Parts: $parts (size=${parts.size})") // DEBUG
                         
                         if (parts.size != 3) {
                             println("❌ Invalid format. Use: add <title>|<command>|<cron>")
@@ -153,8 +147,6 @@ fun main() = runBlocking {
                         val command = parts[1]
                         val cronExpr = parts[2]
                         
-                        println("[DEBUG] Parsed - title='$title', command='$command', cron='$cronExpr'") // DEBUG
-                        
                         // Валидация cron
                         if (!CronParser.isValid(cronExpr)) {
                             println("❌ Invalid cron: $cronExpr")
@@ -163,7 +155,6 @@ fun main() = runBlocking {
                         }
                         
                         val nextExec = CronParser.calculateNext(cronExpr, System.currentTimeMillis())
-                        println("[DEBUG] Next execution: $nextExec") // DEBUG
                         
                         val reminder = Reminder(
                             title = title,
@@ -172,9 +163,8 @@ fun main() = runBlocking {
                             nextExecution = nextExec
                         )
                         
-                        println("[DEBUG] Saving reminder...") // DEBUG
-                        runBlocking { storage.save(reminder) }
-                        println("[DEBUG] Saved!") // DEBUG
+                        // Прямой вызов suspend функции (мы уже в runBlocking)
+                        storage.save(reminder)
                         
                         println("✅ Reminder added: ${reminder.id.take(8)} - ${reminder.title}")
                         if (nextExec != null) {
