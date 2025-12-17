@@ -15,12 +15,15 @@ dependencies {
     // MCP SDK
     implementation("io.modelcontextprotocol:kotlin-sdk:0.7.4")
     
-    // Ktor Client для Yandex GPT API
+    // Ktor Client для Yandex GPT API и CoinCap
     implementation("io.ktor:ktor-client-core:2.3.7")
     implementation("io.ktor:ktor-client-cio:2.3.7")
     implementation("io.ktor:ktor-client-content-negotiation:2.3.7")
     implementation("io.ktor:ktor-client-logging:2.3.7")
     implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.7")
+    
+    // ВАЖНО: Добавляем недостающий плагин для HttpTimeout
+    implementation("io.ktor:ktor-client-plugins:2.3.7")
     
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
