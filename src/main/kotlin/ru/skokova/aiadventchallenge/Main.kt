@@ -18,7 +18,7 @@ import ru.skokova.aiadventchallenge.utils.loadProperties
 
 private val logger = LoggerFactory.getLogger("Main")
 
-suspend fun main() {
+fun main() = runBlocking {
     logger.info("═══════════════════════════════════════════")
     logger.info("   Reminder MCP Server with AI Agent      ")
     logger.info("═══════════════════════════════════════════")
@@ -45,7 +45,7 @@ suspend fun main() {
     val aiAgent = YandexAIAgent(
         apiKey = apiKey,
         folderId = folderId,
-        mcpServer = mcpServer,  // Передаём ReminderMCPServer
+        mcpServer = mcpServer,
         yandexGPTClient = yandexGPTClient
     )
     
@@ -61,71 +61,91 @@ suspend fun main() {
     logger.info("💬 CLI interface ready")
     logger.info("═══════════════════════════════════════════")
     
-    // CLI интерфейс
+    // CLI интерфейс с BufferedReader
     println("\nCommands: add | list | test <command> | exit\n")
     
+    val reader = System.`in`.bufferedReader()
+    
     while (true) {
-        print("> ")
-        val input = readLine() ?: break
-        
-        when {
-            input == "exit" -> {
-                logger.info("Shutting down...")
-                schedulerJob.cancel()
+        try {
+            print("> ")
+            System.out.flush() // Важно для вывода приглашения
+            
+            val input = reader.readLine()
+            
+            // Проверяем на null (Ctrl+D / EOF)
+            if (input == null) {
+                logger.info("EOF detected, shutting down...")
                 break
             }
             
-            input == "list" -> {
-                val reminders = storage.loadAll()
-                if (reminders.isEmpty()) {
-                    println("No reminders")
-                } else {
-                    reminders.forEach { r ->
-                        val next = r.nextExecution?.let {
-                            CronParser.formatTimestamp(it)
-                        } ?: "?"
-                        println("  ${r.id.take(8)}: ${r.title} (${r.cronExpression}) → $next")
+            // Пропускаем пустые строки
+            if (input.isBlank()) {
+                continue
+            }
+            
+            when {
+                input.trim() == "exit" -> {
+                    logger.info("Shutting down...")
+                    schedulerJob.cancel()
+                    break
+                }
+                
+                input.trim() == "list" -> {
+                    val reminders = storage.loadAll()
+                    if (reminders.isEmpty()) {
+                        println("No reminders")
+                    } else {
+                        reminders.forEach { r ->
+                            val next = r.nextExecution?.let {
+                                CronParser.formatTimestamp(it)
+                            } ?: "?"
+                            println("  ${r.id.take(8)}: ${r.title} (${r.cronExpression}) → $next")
+                        }
                     }
                 }
-            }
-            
-            input.startsWith("test ") -> {
-                val command = input.removePrefix("test ")
-                println("\n🔄 Executing: $command")
-                try {
-                    val response = aiAgent.executeCommand(command)
-                    println("\n✅ Summary: ${response.summary}")
-                    println("🔧 Tools used: ${response.toolCalls.map { it.toolName }}")
-                } catch (e: Exception) {
-                    println("\n❌ Error: ${e.message}")
-                    e.printStackTrace()
-                }
-            }
-            
-            input.startsWith("add ") -> {
-                // Формат: add "Title" "Command" "0 9 * * *"
-                val parts = input.removePrefix("add ")
-                    .split("\" \"")
-                    .map { it.trim('"') }
                 
-                if (parts.size == 3) {
-                    val reminder = Reminder(
-                        title = parts[0],
-                        command = parts[1],
-                        cronExpression = parts[2],
-                        nextExecution = CronParser.calculateNext(parts[2], System.currentTimeMillis())
-                    )
-                    runBlocking { storage.save(reminder) }
-                    println("✅ Reminder added: ${reminder.id.take(8)} - ${reminder.title}")
-                } else {
-                    println("Usage: add \"Title\" \"Command\" \"Cron\"")
-                    println("Example: add \"Крипто\" \"Проверь BTC и ETH\" \"0 * * * *\"")
+                input.trim().startsWith("test ") -> {
+                    val command = input.trim().removePrefix("test ")
+                    println("\n🔄 Executing: $command")
+                    try {
+                        val response = aiAgent.executeCommand(command)
+                        println("\n✅ Summary: ${response.summary}")
+                        println("🔧 Tools used: ${response.toolCalls.map { it.toolName }}")
+                    } catch (e: Exception) {
+                        println("\n❌ Error: ${e.message}")
+                        e.printStackTrace()
+                    }
+                }
+                
+                input.trim().startsWith("add ") -> {
+                    // Формат: add "Title" "Command" "0 9 * * *"
+                    val parts = input.trim().removePrefix("add ")
+                        .split("\" \"")
+                        .map { it.trim('"') }
+                    
+                    if (parts.size == 3) {
+                        val reminder = Reminder(
+                            title = parts[0],
+                            command = parts[1],
+                            cronExpression = parts[2],
+                            nextExecution = CronParser.calculateNext(parts[2], System.currentTimeMillis())
+                        )
+                        storage.save(reminder)
+                        println("✅ Reminder added: ${reminder.id.take(8)} - ${reminder.title}")
+                    } else {
+                        println("Usage: add \"Title\" \"Command\" \"Cron\"")
+                        println("Example: add \"Крипто\" \"Проверь BTC и ETH\" \"0 * * * *\"")
+                    }
+                }
+                
+                else -> {
+                    println("Unknown command. Try: add, list, test, exit")
                 }
             }
-            
-            else -> {
-                println("Unknown command. Try: add, list, test, exit")
-            }
+        } catch (e: Exception) {
+            logger.error("Error processing command", e)
+            println("Error: ${e.message}")
         }
     }
     
