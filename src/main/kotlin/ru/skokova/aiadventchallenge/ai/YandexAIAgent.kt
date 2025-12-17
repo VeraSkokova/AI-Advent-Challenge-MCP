@@ -61,7 +61,7 @@ class YandexAIAgent(
         val toolCalls = parseToolCalls(firstResponse)
         
         if (toolCalls.isEmpty()) {
-            logger.info("ℹ️ No tools needed")
+            logger.info("ℹ️ No tools parsed - returning raw response")
             return AgentResponse(firstResponse, emptyList())
         }
         
@@ -121,28 +121,58 @@ class YandexAIAgent(
             
             Когда пользователь даёт команду:
             1. Определи, какие инструменты нужны
-            2. Верни JSON:
-            ```json
+            2. Верни JSON БЕЗ markdown:
             {"tools": [{"name": "tool_name", "params": {"key": "value"}}]}
-            ```
             
             Примеры:
             - "Проверь BTC и ETH" → {"tools": [{"name": "check_crypto_rates", "params": {"coins": ["bitcoin", "ethereum"]}}]}
             - "Покажи задачи" → {"tools": [{"name": "list_reminders", "params": {"status": "active"}}]}
             
-            ВАЖНО: Отвечай ТОЛЬКО JSON блоком ```json.
+            ВАЖНО: Отвечай ТОЛЬКО чистым JSON, БЕЗ ```json и других обёрток.
         """.trimIndent()
     }
     
     private fun parseToolCalls(response: String): List<ToolCall> {
-        val jsonMatch = Regex("""```json\s*(\{.*?\})\s*```""", RegexOption.DOT_MATCHES_ALL)
-            .find(response)
-            ?: Regex("""(\{"tools":\s*\[.*?\]\})""", RegexOption.DOT_MATCHES_ALL)
-                .find(response)
-            ?: return emptyList()
+        // Удаляем markdown обёртки и лишние пробелы
+        var cleanedResponse = response
+            .replace("```json", "")
+            .replace("```", "")
+            .trim()
+        
+        // Ищем JSON объект с "tools"
+        val jsonPattern = Regex("""\{[\s\S]*?"tools"[\s\S]*?\]""", RegexOption.MULTILINE)
+        val match = jsonPattern.find(cleanedResponse)
+        
+        if (match == null) {
+            logger.warn("No JSON found in response: $cleanedResponse")
+            return emptyList()
+        }
+        
+        // Найдём закрывающую скобку
+        val startIdx = match.range.first
+        var openBraces = 0
+        var endIdx = startIdx
+        
+        for (i in startIdx until cleanedResponse.length) {
+            when (cleanedResponse[i]) {
+                '{' -> openBraces++
+                '}' -> {
+                    openBraces--
+                    if (openBraces == 0) {
+                        endIdx = i + 1
+                        break
+                    }
+                }
+            }
+        }
+        
+        val jsonString = cleanedResponse.substring(startIdx, endIdx)
+        logger.debug("Extracted JSON: $jsonString")
         
         return try {
-            val parsed = json.decodeFromString<ToolCallsWrapper>(jsonMatch.groupValues[1])
+            val parsed = json.decodeFromString<ToolCallsWrapper>(jsonString)
+            logger.info("✓ Parsed ${parsed.tools.size} tool call(s)")
+            
             parsed.tools.map { toolData ->
                 val params = toolData.params.mapValues { (_, value) ->
                     when (value) {
@@ -156,7 +186,8 @@ class YandexAIAgent(
                 ToolCall(toolData.name, params, "")
             }
         } catch (e: Exception) {
-            logger.warn("Parse failed: ${e.message}")
+            logger.error("JSON parse failed: ${e.message}")
+            logger.error("Attempted to parse: $jsonString")
             emptyList()
         }
     }
