@@ -39,7 +39,7 @@ dependencies {
 }
 
 application {
-    mainClass.set("ru.skokova.aiadventchallenge.day13.MainKt")
+    mainClass.set("ru.skokova.aiadventchallenge.MainKt")
 }
 
 tasks.test {
