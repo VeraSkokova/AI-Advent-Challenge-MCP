@@ -70,7 +70,7 @@
     *Убедитесь, что файл появился по пути `build/libs/ai-advent-mcp-1.0-SNAPSHOT-all.jar`.*
 
 4.  **Запустите Агента:**
-    Запустите функцию `main()` в файле `src/main/kotlin/Main.kt`.
+    Запустите функцию `main()` в файле `src/main/kotlin/ru/skokova/aiadventchallenge/CryptoAgent.kt`.
 
 ### Пример работы
 
