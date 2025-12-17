@@ -45,7 +45,7 @@ suspend fun main() {
     val aiAgent = YandexAIAgent(
         apiKey = apiKey,
         folderId = folderId,
-        mcpServer = mcpServer.server,
+        mcpServer = mcpServer,  // Передаём ReminderMCPServer
         yandexGPTClient = yandexGPTClient
     )
     
@@ -119,7 +119,7 @@ suspend fun main() {
                     println("✅ Reminder added: ${reminder.id.take(8)} - ${reminder.title}")
                 } else {
                     println("Usage: add \"Title\" \"Command\" \"Cron\"")
-                    println("Example: add \"Crypto Check\" \"Проверь курсы BTC и ETH\" \"0 * * * *\"")
+                    println("Example: add \"Крипто\" \"Проверь BTC и ETH\" \"0 * * * *\"")
                 }
             }
             
