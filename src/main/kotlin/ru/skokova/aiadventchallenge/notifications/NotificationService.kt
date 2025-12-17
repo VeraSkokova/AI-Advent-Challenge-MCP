@@ -38,11 +38,12 @@ class NotificationService {
      */
     private fun sendLinuxNotification(title: String, message: String) {
         try {
+            // -t 15000 = 15 секунд
             val process = Runtime.getRuntime().exec(
-                arrayOf("notify-send", title, message, "-u", "normal", "-t", "10000")
+                arrayOf("notify-send", title, message, "-u", "normal", "-t", "15000")
             )
             process.waitFor()
-            logger.debug("Linux notification sent via notify-send")
+            logger.debug("Linux notification sent via notify-send (15s)")
         } catch (e: Exception) {
             logger.warn("notify-send not available, notification not sent", e)
         }
@@ -82,17 +83,20 @@ class NotificationService {
             
             // Создаём простой иконку (1x1 pixel)
             val image = Toolkit.getDefaultToolkit().createImage(ByteArray(1))
-            val trayIcon = TrayIcon(image, "Reminder")
+            val trayIcon = TrayIcon(image, "Reminder Service")
             trayIcon.isImageAutoSize = true
+            trayIcon.toolTip = "AI Reminder Agent"
             
             tray.add(trayIcon)
             trayIcon.displayMessage(title, message, TrayIcon.MessageType.INFO)
             
-            // Удаляем иконку после отправки
-            Thread.sleep(1000)
+            logger.debug("Windows notification sent via SystemTray")
+            
+            // Удаляем иконку через 10 секунд (чтобы уведомление осталось видимым)
+            Thread.sleep(10000)
             tray.remove(trayIcon)
             
-            logger.debug("Windows notification sent via SystemTray")
+            logger.debug("Removed tray icon after 10s")
         } catch (e: Exception) {
             logger.warn("Failed to send Windows notification", e)
         }
