@@ -61,12 +61,13 @@ fun main() = runBlocking {
     logger.info("💬 CLI interface ready")
     logger.info("═══════════════════════════════════════════")
     
-    // CLI интерфейс с BufferedReader
+    // CLI интерфейс
     println("\nCommands:")
-    println("  add \"Title\" \"Command\" \"Cron\"  - Добавить напоминание")
-    println("  list                          - Список напоминаний")
-    println("  test <command>                - Тест AI агента")
-    println("  exit                          - Выход\n")
+    println("  add <title>|<command>|<cron>  - Добавить (разделитель |)")
+    println("  list                           - Список")
+    println("  test <command>                 - Тест AI")
+    println("  exit                           - Выход")
+    println("\nПример: add Крипто|Проверь BTC и ETH|*/1 * * * *\n")
     
     val reader = System.`in`.bufferedReader()
     
@@ -86,14 +87,18 @@ fun main() = runBlocking {
                 continue
             }
             
+            val trimmed = input.trim()
+            println("[DEBUG] Got input: '$trimmed'") // DEBUG
+            
             when {
-                input.trim() == "exit" -> {
+                trimmed == "exit" -> {
                     logger.info("Shutting down...")
                     schedulerJob.cancel()
                     break
                 }
                 
-                input.trim() == "list" -> {
+                trimmed == "list" -> {
+                    println("[DEBUG] Executing list command") // DEBUG
                     val reminders = runBlocking { storage.loadAll() }
                     if (reminders.isEmpty()) {
                         println("❌ No reminders")
@@ -115,8 +120,8 @@ fun main() = runBlocking {
                     }
                 }
                 
-                input.trim().startsWith("test ") -> {
-                    val command = input.trim().removePrefix("test ")
+                trimmed.startsWith("test ") -> {
+                    val command = trimmed.removePrefix("test ")
                     println("\n🔄 Executing: $command")
                     try {
                         val response = aiAgent.executeCommand(command)
@@ -128,18 +133,19 @@ fun main() = runBlocking {
                     }
                 }
                 
-                input.trim().startsWith("add ") -> {
+                trimmed.startsWith("add ") -> {
+                    println("[DEBUG] Executing add command") // DEBUG
                     try {
-                        // Формат: add "Title" "Command" "0 9 * * *"
-                        val parts = input.trim().removePrefix("add ")
-                            .split("\" \"")
-                            .map { it.trim('"') }
+                        // Формат: add Title|Command|Cron
+                        val content = trimmed.removePrefix("add ").trim()
+                        println("[DEBUG] Content: '$content'") // DEBUG
                         
-                        logger.debug("🔍 Parsed parts: $parts (size=${parts.size})")
+                        val parts = content.split("|").map { it.trim() }
+                        println("[DEBUG] Parts: $parts (size=${parts.size})") // DEBUG
                         
                         if (parts.size != 3) {
-                            println("❌ Invalid format. Use: add \"Title\" \"Command\" \"Cron\"")
-                            println("💡 Example: add \"Крипто\" \"Проверь BTC и ETH\" \"*/1 * * * *\"")
+                            println("❌ Invalid format. Use: add <title>|<command>|<cron>")
+                            println("💡 Example: add Крипто|Проверь BTC и ETH|*/1 * * * *")
                             continue
                         }
                         
@@ -147,14 +153,17 @@ fun main() = runBlocking {
                         val command = parts[1]
                         val cronExpr = parts[2]
                         
+                        println("[DEBUG] Parsed - title='$title', command='$command', cron='$cronExpr'") // DEBUG
+                        
                         // Валидация cron
                         if (!CronParser.isValid(cronExpr)) {
-                            println("❌ Invalid cron expression: $cronExpr")
+                            println("❌ Invalid cron: $cronExpr")
                             println("💡 Examples: */1 * * * * (every minute), 0 * * * * (hourly)")
                             continue
                         }
                         
                         val nextExec = CronParser.calculateNext(cronExpr, System.currentTimeMillis())
+                        println("[DEBUG] Next execution: $nextExec") // DEBUG
                         
                         val reminder = Reminder(
                             title = title,
@@ -163,7 +172,9 @@ fun main() = runBlocking {
                             nextExecution = nextExec
                         )
                         
+                        println("[DEBUG] Saving reminder...") // DEBUG
                         runBlocking { storage.save(reminder) }
+                        println("[DEBUG] Saved!") // DEBUG
                         
                         println("✅ Reminder added: ${reminder.id.take(8)} - ${reminder.title}")
                         if (nextExec != null) {
@@ -171,17 +182,19 @@ fun main() = runBlocking {
                         }
                     } catch (e: Exception) {
                         println("❌ Error adding reminder: ${e.message}")
-                        logger.error("Add reminder failed", e)
+                        e.printStackTrace()
                     }
                 }
                 
                 else -> {
-                    println("❌ Unknown command. Try: add, list, test, exit")
+                    println("❌ Unknown command: '$trimmed'")
+                    println("Try: add, list, test, exit")
                 }
             }
         } catch (e: Exception) {
             logger.error("Error processing command", e)
             println("❌ Error: ${e.message}")
+            e.printStackTrace()
         }
     }
     
