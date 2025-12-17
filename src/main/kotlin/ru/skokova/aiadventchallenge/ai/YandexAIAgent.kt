@@ -1,11 +1,9 @@
 package ru.skokova.aiadventchallenge.ai
 
-import io.modelcontextprotocol.kotlin.sdk.CallToolRequest
-import io.modelcontextprotocol.kotlin.sdk.Tool
-import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
+import ru.skokova.aiadventchallenge.mcp.ReminderMCPServer
 
 /**
  * Ответ AI-агента
@@ -39,7 +37,7 @@ data class ToolCallData(
 class YandexAIAgent(
     private val apiKey: String,
     private val folderId: String,
-    private val mcpServer: Server,
+    private val mcpServer: ReminderMCPServer,
     private val yandexGPTClient: YandexGPTClient
 ) {
     private val logger = LoggerFactory.getLogger(YandexAIAgent::class.java)
@@ -49,13 +47,7 @@ class YandexAIAgent(
         logger.info("🤖 Processing: $command")
         
         // ШАГ 1: Получаем tools динамически
-        val availableTools = try {
-            mcpServer.listToolsBlocking()
-        } catch (e: Exception) {
-            logger.error("Failed to get tools", e)
-            emptyList()
-        }
-        
+        val availableTools = mcpServer.getToolsList()
         logger.info("📋 Tools: ${availableTools.map { it.name }}")
         
         // ШАГ 2: System prompt
@@ -82,7 +74,7 @@ class YandexAIAgent(
         for (call in toolCalls) {
             try {
                 logger.info("  → ${call.toolName}")
-                val result = executeTool(call.toolName, call.parameters)
+                val result = mcpServer.executeTool(call.toolName, call.parameters)
                 executedCalls.add(call.copy(result = result))
                 rawResults[call.toolName] = result
                 logger.info("  ✓ Done")
@@ -111,41 +103,10 @@ class YandexAIAgent(
         return AgentResponse(summary, executedCalls, rawResults)
     }
     
-    private fun executeTool(toolName: String, parameters: Map<String, Any>): String {
-        // Преобразуем Map<String, Any> в JsonObject
-        val jsonArgs = buildJsonObject {
-            parameters.forEach { (key, value) ->
-                when (value) {
-                    is String -> put(key, value)
-                    is Number -> put(key, value)
-                    is Boolean -> put(key, value)
-                    is List<*> -> putJsonArray(key) {
-                        value.forEach { item ->
-                            when (item) {
-                                is String -> add(item)
-                                is Number -> add(item)
-                                else -> add(item.toString())
-                            }
-                        }
-                    }
-                    else -> put(key, value.toString())
-                }
-            }
-        }
-        
-        val request = CallToolRequest(name = toolName, arguments = jsonArgs)
-        val result = mcpServer.callToolBlocking(request)
-        
-        return when {
-            result.isError == true -> "Error: ${result.content.firstOrNull()?.text}"
-            else -> result.content.firstOrNull()?.text ?: "No result"
-        }
-    }
-    
-    private fun buildSystemPrompt(tools: List<Tool>): String {
+    private fun buildSystemPrompt(tools: List<ru.skokova.aiadventchallenge.mcp.ToolInfo>): String {
         val toolDescriptions = if (tools.isNotEmpty()) {
             tools.joinToString("\n") { tool ->
-                val params = (tool.inputSchema?.properties as? JsonObject)?.keys?.joinToString(", ") ?: ""
+                val params = tool.parameters.joinToString(", ")
                 "- ${tool.name}: ${tool.description}\n  Параметры: $params"
             }
         } else {
@@ -209,13 +170,4 @@ class YandexAIAgent(
             """.trimIndent()
         }
     }
-}
-
-// Extension для blocking вызовов
-private fun Server.listToolsBlocking(): List<Tool> {
-    return kotlinx.coroutines.runBlocking { listTools() }
-}
-
-private fun Server.callToolBlocking(request: CallToolRequest): io.modelcontextprotocol.kotlin.sdk.CallToolResult {
-    return kotlinx.coroutines.runBlocking { callTool(request) }
 }
