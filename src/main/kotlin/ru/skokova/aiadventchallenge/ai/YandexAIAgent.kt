@@ -3,11 +3,8 @@ package ru.skokova.aiadventchallenge.ai
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
-import ru.skokova.aiadventchallenge.mcp.ReminderMCPServer
+import ru.skokova.aiadventchallenge.mcp.*
 
-/**
- * Ответ AI-агента
- */
 data class AgentResponse(
     val summary: String,
     val toolCalls: List<ToolCall>,
@@ -22,161 +19,196 @@ data class ToolCall(
 
 @Serializable
 data class ToolCallsWrapper(
-    val tools: List<ToolCallData>
+    val tools: List<ToolCallData> = emptyList()
 )
 
 @Serializable
-data class ToolCallData(
-    val name: String,
-    val params: Map<String, JsonElement>
-)
+data class ToolCallData(val name: String, val params: Map<String, JsonElement>)
 
-/**
- * AI-агент на базе YandexGPT
- */
 class YandexAIAgent(
     private val apiKey: String,
     private val folderId: String,
-    private val mcpServer: ReminderMCPServer,
+    private val reminderMcpServer: ReminderMCPServer,
+    private val cryptoCurrencyMcpServer: CryptoCurrencyMCPServer,
+    private val summarizationMcpServer: SummarizationMCPServer,
+    private val filesystemClient: FilesystemMCPClient,
     private val yandexGPTClient: YandexGPTClient
 ) {
     private val logger = LoggerFactory.getLogger(YandexAIAgent::class.java)
     private val json = Json { ignoreUnknownKeys = true }
-    
+
     suspend fun executeCommand(command: String): AgentResponse {
-        logger.info("🤖 Processing: $command")
-        
-        // ШАГ 1: Получаем tools динамически
-        val availableTools = mcpServer.getToolsList()
-        logger.info("📋 Tools: ${availableTools.map { it.name }}")
-        
-        // ШАГ 2: System prompt
-        val systemPrompt = buildSystemPrompt(availableTools)
-        
-        // ШАГ 3: YandexGPT
-        val firstResponse = yandexGPTClient.chat(systemPrompt, command)
-        logger.info("📝 Response: ${firstResponse.take(200)}...")
-        
-        // ШАГ 4: Парсим tool calls
-        val toolCalls = parseToolCalls(firstResponse)
-        
-        if (toolCalls.isEmpty()) {
-            logger.info("ℹ️ No tools parsed - returning raw response")
-            return AgentResponse(firstResponse, emptyList())
-        }
-        
-        logger.info("🔧 Executing ${toolCalls.size} tool(s)")
-        
-        // ШАГ 5: Выполняем tools
+        logger.info("🤖 Processing command: $command")
+
+        val systemPrompt = buildSystemPrompt()
         val executedCalls = mutableListOf<ToolCall>()
         val rawResults = mutableMapOf<String, Any>()
-        
-        for (call in toolCalls) {
-            try {
-                logger.info("  → ${call.toolName}")
-                val result = mcpServer.executeTool(call.toolName, call.parameters)
-                executedCalls.add(call.copy(result = result))
+
+        // Собираем списки доступных инструментов для роутинга
+        val rNames = reminderMcpServer.getToolsList().map { it.name }.toSet()
+        val cNames = cryptoCurrencyMcpServer.getToolsList().map { it.name }.toSet()
+        val sNames = summarizationMcpServer.getToolsList().map { it.name }.toSet()
+        val fNames = filesystemClient.listTools().map { it.name }.toSet()
+
+        // Итеративный цикл
+        var currentContext = command
+        var iterationCount = 0
+        val maxIterations = 10
+
+        while (iterationCount < maxIterations) {
+            iterationCount++
+            logger.info("📍 Iteration $iterationCount")
+
+            // Строим контекст для LLM
+            val contextMessage = buildContextMessage(currentContext, executedCalls)
+
+            // Запрашиваем следующее действие
+            val response = yandexGPTClient.chat(systemPrompt, contextMessage)
+            logger.info("📝 LLM Response: ${response.take(300)}...")
+
+            // Парсим ответ
+            val toolCalls = parseToolCalls(response)
+
+            if (toolCalls.isEmpty()) {
+                logger.info("✅ LLM вернула финальный ответ (инструментов нет)")
+                return AgentResponse(response, executedCalls, rawResults)
+            }
+
+            // Выполняем полученные инструменты (обычно 1)
+            for (call in toolCalls) {
+                logger.info("🔧 Executing tool: ${call.toolName} with params: ${call.parameters}")
+
+                val result = try {
+                    when (call.toolName) {
+                        in rNames -> reminderMcpServer.executeTool(call.toolName, call.parameters)
+                        in cNames -> cryptoCurrencyMcpServer.executeTool(call.toolName, call.parameters)
+                        in sNames -> summarizationMcpServer.executeTool(call.toolName, call.parameters)
+                        in fNames -> filesystemClient.callTool(call.toolName, call.parameters)
+                        else -> "Error: Tool not found '${call.toolName}'"
+                    }
+                } catch (e: Exception) {
+                    logger.error("Error executing ${call.toolName}", e)
+                    "Error: ${e.message}"
+                }
+
+                logger.info("✅ Result: ${result.take(150)}...")
+
+                val toolCallWithResult = call.copy(result = result)
+                executedCalls.add(toolCallWithResult)
                 rawResults[call.toolName] = result
-                logger.info("  ✓ Done")
-            } catch (e: Exception) {
-                logger.error("  ✗ Failed", e)
-                executedCalls.add(call.copy(result = "Error: ${e.message}"))
+
+                // Обновляем контекст для следующей итерации
+                currentContext = result
             }
         }
-        
-        // ШАГ 6: Summary
-        val resultsContext = buildResultsContext(executedCalls)
-        val summaryPrompt = """
-            Команда: "$command"
-            Результаты:
-            $resultsContext
-            
-            Создай краткую сводку (2-3 предложения) с эмодзи.
-        """.trimIndent()
-        
-        val summary = yandexGPTClient.chat(
-            "Ты ассистент, создающий сводки.",
-            summaryPrompt
+
+        // Если достигли максимума итераций
+        return AgentResponse(
+            "Выполнено максимальное количество итераций ($maxIterations). Результаты собраны.",
+            executedCalls,
+            rawResults
         )
-        
-        logger.info("✅ Summary: $summary")
-        return AgentResponse(summary, executedCalls, rawResults)
     }
-    
-    private fun buildSystemPrompt(tools: List<ru.skokova.aiadventchallenge.mcp.ToolInfo>): String {
-        val toolDescriptions = if (tools.isNotEmpty()) {
-            tools.joinToString("\n") { tool ->
-                val params = tool.parameters.joinToString(", ")
-                "- ${tool.name}: ${tool.description}\n  Параметры: $params"
-            }
+
+    private fun buildContextMessage(userCommand: String, previousResults: List<ToolCall>): String {
+        return if (previousResults.isEmpty()) {
+            """
+            Задача пользователя: "$userCommand"
+            
+            ВЕРНИ JSON С ОДНИМ (!) ИНСТРУМЕНТОМ. Ничего больше. Только один.
+            
+            Формат: {"tools": [{"name": "check_crypto_rates", "params": {"coins": ["Bitcoin", "Ethereum"]}}]}
+            
+            Какой инструмент вызвать ПЕРВЫМ?
+            """.trimIndent()
         } else {
-            "(Нет инструментов)"
+            val lastResult = previousResults.last()
+            val toolsSoFar = previousResults.joinToString("\n") { "  ${previousResults.indexOf(it) + 1}. ${it.toolName}" }
+            """
+            Задача пользователя: "$userCommand"
+            
+            Выполнено:
+            $toolsSoFar
+            
+            Результат последнего инструмента (${previousResults.last().toolName}):
+            ${lastResult.result.take(250)}
+            
+            ТЕПЕРЬ:
+            - Если нужен ещё один инструмент, верни JSON с ОДНИМ инструментом: 
+              {"tools": [{"name": "...", "params": {...}}]}
+            - Если задача завершена, ответь ТОЛЬКО текстом (без JSON). Просто опиши результат.
+            
+            ВАЖНО: Верни только ОДИН инструмент за раз. Не несколько.
+            """.trimIndent()
         }
-        
+    }
+
+    private suspend fun buildSystemPrompt(): String {
+        val allTools = reminderMcpServer.getToolsList() +
+                cryptoCurrencyMcpServer.getToolsList() +
+                summarizationMcpServer.getToolsList() +
+                filesystemClient.listTools()
+
         return """
-            Ты - AI ассистент.
+            Ты AI-агент, выполняющий задачи пошагово.
             
-            Доступные инструменты:
-            $toolDescriptions
+            ИНСТРУМЕНТЫ:
+            ${allTools.joinToString("\n") { "- ${it.name}: ${it.description}" }}
             
-            Когда пользователь даёт команду:
-            1. Определи, какие инструменты нужны
-            2. Верни чистый JSON:
-            {"tools": [{"name": "tool_name", "params": {"key": "value"}}]}
+            ПАЙПЛАЙН для криптовалют:
+            ШАГ 1: check_crypto_rates → получить курсы
+            ШАГ 2: summarize_data → красиво отформатировать
+            ШАГ 3: write_file → сохранить результат
             
-            Примеры:
-            - "Проверь BTC и ETH" → {"tools": [{"name": "check_crypto_rates", "params": {"coins": ["bitcoin", "ethereum"]}}]}
-            - "Покажи задачи" → {"tools": [{"name": "list_reminders", "params": {"status": "active"}}]}
-            
-            ВАЖНО: Отвечай ТОЛЬКО чистым JSON, без markdown.
+            ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
+            1. Возвращай JSON в формате: {"tools": [{"name": "...", "params": {...}}]}
+            2. ОДНОГО инструмента за раз. Никогда не несколько в одном запросе.
+            3. НИКОГДА не оборачивай JSON в `````` блоки
+            4. Передавай полный результат предыдущего инструмента как параметр следующему
+            5. Когда всё готово, ответь текстом (без JSON)
         """.trimIndent()
     }
-    
+
     private fun parseToolCalls(response: String): List<ToolCall> {
-        // Подход из day12: простой поиск { и }
         val jsonStartIndex = response.indexOf('{')
         val jsonEndIndex = response.lastIndexOf('}')
-        
+
+        // Если нет JSON — это текстовый ответ
         if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonEndIndex <= jsonStartIndex) {
-            logger.warn("❌ No JSON found in response")
-            logger.debug("Response: $response")
+            logger.info("📄 No JSON found in response")
             return emptyList()
         }
-        
-        val jsonString = response.substring(jsonStartIndex, jsonEndIndex + 1)
+
+        var jsonString = response.substring(jsonStartIndex, jsonEndIndex + 1)
         logger.debug("🔍 Extracted JSON: $jsonString")
-        
+
         return try {
-            val parsed = json.decodeFromString<ToolCallsWrapper>(jsonString)
-            logger.info("✓ Parsed ${parsed.tools.size} tool call(s)")
-            
-            parsed.tools.map { toolData ->
-                val params = toolData.params.mapValues { (_, value) ->
+            val wrapper = json.decodeFromString<ToolCallsWrapper>(jsonString)
+
+            if (wrapper.tools.isEmpty()) {
+                logger.info("📄 JSON parsed but tools list is empty")
+                return emptyList()
+            }
+
+            wrapper.tools.map { toolData ->
+                val cleanParams = toolData.params.mapValues { (_, value) ->
                     when (value) {
-                        is JsonPrimitive -> value.contentOrNull ?: value.toString()
-                        is JsonArray -> value.map { 
-                            (it as? JsonPrimitive)?.contentOrNull ?: it.toString() 
+                        is JsonPrimitive -> {
+                            if (value.isString) value.content else value.toString()
+                        }
+                        is JsonArray -> {
+                            value.map {
+                                if (it is JsonPrimitive && it.isString) it.content else it.toString()
+                            }
                         }
                         else -> value.toString()
                     }
                 }
-                logger.debug("🔧 Tool: ${toolData.name}, params: $params")
-                ToolCall(toolData.name, params, "")
+                ToolCall(toolData.name, cleanParams, "")
             }
         } catch (e: Exception) {
-            logger.error("❌ JSON parse failed: ${e.message}")
-            logger.error("Attempted to parse: $jsonString")
+            logger.error("❌ Failed to parse JSON: $jsonString. Error: ${e.message}")
             emptyList()
-        }
-    }
-    
-    private fun buildResultsContext(calls: List<ToolCall>): String {
-        return calls.joinToString("\n\n") { call ->
-            """
-            Tool: ${call.toolName}
-            Params: ${call.parameters}
-            Result: ${call.result}
-            """.trimIndent()
         }
     }
 }
