@@ -17,11 +17,9 @@ data class ToolCall(
     val result: String
 )
 
+// Wrapper классы больше не нужны для парсинга, но оставим для совместимости если нужно
 @Serializable
-data class ToolCallsWrapper(
-    val tools: List<ToolCallData> = emptyList()
-)
-
+data class ToolCallsWrapper(val tools: List<ToolCallData> = emptyList())
 @Serializable
 data class ToolCallData(val name: String, val params: Map<String, JsonElement>)
 
@@ -35,7 +33,15 @@ class YandexAIAgent(
     private val yandexGPTClient: YandexGPTClient
 ) {
     private val logger = LoggerFactory.getLogger(YandexAIAgent::class.java)
-    private val json = Json { ignoreUnknownKeys = true }
+
+    // Максимально мягкая конфигурация JSON
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        allowSpecialFloatingPointValues = true
+        prettyPrint = false
+        coerceInputValues = true // Пытаться привести типы
+    }
 
     suspend fun executeCommand(command: String): AgentResponse {
         logger.info("🤖 Processing command: $command")
@@ -44,13 +50,11 @@ class YandexAIAgent(
         val executedCalls = mutableListOf<ToolCall>()
         val rawResults = mutableMapOf<String, Any>()
 
-        // Собираем списки доступных инструментов для роутинга
         val rNames = reminderMcpServer.getToolsList().map { it.name }.toSet()
         val cNames = cryptoCurrencyMcpServer.getToolsList().map { it.name }.toSet()
         val sNames = summarizationMcpServer.getToolsList().map { it.name }.toSet()
         val fNames = filesystemClient.listTools().map { it.name }.toSet()
 
-        // Итеративный цикл
         var currentContext = command
         var iterationCount = 0
         val maxIterations = 10
@@ -59,22 +63,18 @@ class YandexAIAgent(
             iterationCount++
             logger.info("📍 Iteration $iterationCount")
 
-            // Строим контекст для LLM
             val contextMessage = buildContextMessage(currentContext, executedCalls)
-
-            // Запрашиваем следующее действие
             val response = yandexGPTClient.chat(systemPrompt, contextMessage)
             logger.info("📝 LLM Response: ${response.take(300)}...")
 
-            // Парсим ответ
             val toolCalls = parseToolCalls(response)
 
             if (toolCalls.isEmpty()) {
                 logger.info("✅ LLM вернула финальный ответ (инструментов нет)")
-                return AgentResponse(response, executedCalls, rawResults)
+                val cleanResponse = response.replace("``````", "").trim()
+                return AgentResponse(cleanResponse, executedCalls, rawResults)
             }
 
-            // Выполняем полученные инструменты (обычно 1)
             for (call in toolCalls) {
                 logger.info("🔧 Executing tool: ${call.toolName} with params: ${call.parameters}")
 
@@ -97,12 +97,10 @@ class YandexAIAgent(
                 executedCalls.add(toolCallWithResult)
                 rawResults[call.toolName] = result
 
-                // Обновляем контекст для следующей итерации
                 currentContext = result
             }
         }
 
-        // Если достигли максимума итераций
         return AgentResponse(
             "Выполнено максимальное количество итераций ($maxIterations). Результаты собраны.",
             executedCalls,
@@ -115,30 +113,21 @@ class YandexAIAgent(
             """
             Задача пользователя: "$userCommand"
             
-            ВЕРНИ JSON С ОДНИМ (!) ИНСТРУМЕНТОМ. Ничего больше. Только один.
-            
+            ВЕРНИ JSON С ОДНИМ (!) ИНСТРУМЕНТОМ.
             Формат: {"tools": [{"name": "check_crypto_rates", "params": {"coins": ["Bitcoin", "Ethereum"]}}]}
-            
-            Какой инструмент вызвать ПЕРВЫМ?
             """.trimIndent()
         } else {
             val lastResult = previousResults.last()
             val toolsSoFar = previousResults.joinToString("\n") { "  ${previousResults.indexOf(it) + 1}. ${it.toolName}" }
             """
             Задача пользователя: "$userCommand"
-            
             Выполнено:
             $toolsSoFar
+            Результат последнего:
+            ${lastResult.result.take(500)}
             
-            Результат последнего инструмента (${previousResults.last().toolName}):
-            ${lastResult.result.take(250)}
-            
-            ТЕПЕРЬ:
-            - Если нужен ещё один инструмент, верни JSON с ОДНИМ инструментом: 
-              {"tools": [{"name": "...", "params": {...}}]}
-            - Если задача завершена, ответь ТОЛЬКО текстом (без JSON). Просто опиши результат.
-            
-            ВАЖНО: Верни только ОДИН инструмент за раз. Не несколько.
+            Если нужен ещё инструмент, верни JSON: {"tools": [{"name": "...", "params": {...}}]}
+            Если готово, ответь текстом.
             """.trimIndent()
         }
     }
@@ -150,61 +139,73 @@ class YandexAIAgent(
                 filesystemClient.listTools()
 
         return """
-            Ты AI-агент, выполняющий задачи пошагово.
-            
+            Ты AI-агент.
             ИНСТРУМЕНТЫ:
             ${allTools.joinToString("\n") { "- ${it.name}: ${it.description}" }}
             
-            ПАЙПЛАЙН для криптовалют:
-            ШАГ 1: check_crypto_rates → получить курсы
-            ШАГ 2: summarize_data → красиво отформатировать
-            ШАГ 3: write_file → сохранить результат
+            ПАЙПЛАЙН:
+            1. check_crypto_rates
+            2. summarize_data
+            3. write_file
             
-            ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
-            1. Возвращай JSON в формате: {"tools": [{"name": "...", "params": {...}}]}
-            2. ОДНОГО инструмента за раз. Никогда не несколько в одном запросе.
-            3. НИКОГДА не оборачивай JSON в `````` блоки
-            4. Передавай полный результат предыдущего инструмента как параметр следующему
-            5. Когда всё готово, ответь текстом (без JSON)
+            ПРАВИЛА:
+            1. Возвращай JSON: {"tools": [{"name": "...", "params": {...}}]}
+            2. НЕ ИСПОЛЬЗУЙ markdown для JSON.
+            3. Params могут быть объектами.
         """.trimIndent()
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        val jsonStartIndex = response.indexOf('{')
-        val jsonEndIndex = response.lastIndexOf('}')
+        // ИСПРАВЛЕННЫЙ REGEX!
+        val markdownRegex = Regex("``````", RegexOption.DOT_MATCHES_ALL)
+        val match = markdownRegex.find(response)
 
-        // Если нет JSON — это текстовый ответ
-        if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonEndIndex <= jsonStartIndex) {
-            logger.info("📄 No JSON found in response")
-            return emptyList()
-        }
-
-        var jsonString = response.substring(jsonStartIndex, jsonEndIndex + 1)
-        logger.debug("🔍 Extracted JSON: $jsonString")
-
-        return try {
-            val wrapper = json.decodeFromString<ToolCallsWrapper>(jsonString)
-
-            if (wrapper.tools.isEmpty()) {
-                logger.info("📄 JSON parsed but tools list is empty")
+        var jsonString = if (match != null) {
+            match.groupValues[1].trim()
+        } else {
+            val start = response.indexOf('{')
+            val end = response.lastIndexOf('}')
+            if (start != -1 && end != -1 && end > start) {
+                response.substring(start, end + 1)
+            } else {
                 return emptyList()
             }
+        }
 
-            wrapper.tools.map { toolData ->
-                val cleanParams = toolData.params.mapValues { (_, value) ->
-                    when (value) {
-                        is JsonPrimitive -> {
-                            if (value.isString) value.content else value.toString()
-                        }
-                        is JsonArray -> {
-                            value.map {
-                                if (it is JsonPrimitive && it.isString) it.content else it.toString()
+        jsonString = jsonString.replace("\uFEFF", "")
+
+        return try {
+            // Парсим в JsonElement
+            val root = json.parseToJsonElement(jsonString).jsonObject
+            val toolsArray = root["tools"]?.jsonArray
+
+            if (toolsArray.isNullOrEmpty()) return emptyList()
+
+            toolsArray.mapNotNull { toolElement ->
+                if (toolElement !is JsonObject) return@mapNotNull null
+
+                val name = toolElement["name"]?.jsonPrimitive?.content ?: "unknown"
+                val paramsElement = toolElement["params"]
+
+                val cleanParams: Map<String, Any> = when (paramsElement) {
+                    is JsonObject -> paramsElement.mapValues { (_, value) ->
+                        when (value) {
+                            is JsonPrimitive -> if (value.isString) value.content else value.toString()
+                            is JsonObject -> value.toString()
+                            is JsonArray -> {
+                                if (value.all { it is JsonPrimitive && it.isString }) {
+                                    value.map { (it as JsonPrimitive).content }
+                                } else {
+                                    value.toString()
+                                }
                             }
+                            else -> value.toString()
                         }
-                        else -> value.toString()
                     }
+                    else -> emptyMap()
                 }
-                ToolCall(toolData.name, cleanParams, "")
+
+                ToolCall(name, cleanParams, "")
             }
         } catch (e: Exception) {
             logger.error("❌ Failed to parse JSON: $jsonString. Error: ${e.message}")
