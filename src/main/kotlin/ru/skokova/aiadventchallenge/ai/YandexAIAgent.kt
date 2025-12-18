@@ -17,7 +17,7 @@ data class ToolCall(
     val result: String
 )
 
-// Wrapper классы больше не нужны для парсинга, но оставим для совместимости если нужно
+// Wrapper классы оставлены для совместимости, но логика парсинга теперь работает напрямую с JsonElement
 @Serializable
 data class ToolCallsWrapper(val tools: List<ToolCallData> = emptyList())
 @Serializable
@@ -34,13 +34,13 @@ class YandexAIAgent(
 ) {
     private val logger = LoggerFactory.getLogger(YandexAIAgent::class.java)
 
-    // Максимально мягкая конфигурация JSON
+    // Максимально мягкая конфигурация JSON для парсинга ответов LLM
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
         allowSpecialFloatingPointValues = true
         prettyPrint = false
-        coerceInputValues = true // Пытаться привести типы
+        coerceInputValues = true
     }
 
     suspend fun executeCommand(command: String): AgentResponse {
@@ -50,6 +50,7 @@ class YandexAIAgent(
         val executedCalls = mutableListOf<ToolCall>()
         val rawResults = mutableMapOf<String, Any>()
 
+        // Списки инструментов для маршрутизации
         val rNames = reminderMcpServer.getToolsList().map { it.name }.toSet()
         val cNames = cryptoCurrencyMcpServer.getToolsList().map { it.name }.toSet()
         val sNames = summarizationMcpServer.getToolsList().map { it.name }.toSet()
@@ -64,15 +65,23 @@ class YandexAIAgent(
             logger.info("📍 Iteration $iterationCount")
 
             val contextMessage = buildContextMessage(currentContext, executedCalls)
+
+            // Если buildContextMessage вернул спец-сигнал об успехе, завершаем работу
+            if (contextMessage == "STOP_SUCCESS") {
+                logger.info("✅ Pipeline finished successfully via context check")
+                return AgentResponse("Готово! Файл успешно сохранен в папку mcp-output.", executedCalls, rawResults)
+            }
+
             val response = yandexGPTClient.chat(systemPrompt, contextMessage)
             logger.info("📝 LLM Response: ${response.take(300)}...")
 
             val toolCalls = parseToolCalls(response)
 
+            // Если инструментов нет, значит LLM вернула финальный текстовый ответ
             if (toolCalls.isEmpty()) {
-                logger.info("✅ LLM вернула финальный ответ (инструментов нет)")
-                val cleanResponse = response.replace("``````", "").trim()
-                return AgentResponse(cleanResponse, executedCalls, rawResults)
+                logger.info("✅ LLM вернула финальный ответ")
+                // Возвращаем ответ как есть, не пытаясь вырезать markdown, чтобы не сломать форматирование
+                return AgentResponse(response, executedCalls, rawResults)
             }
 
             for (call in toolCalls) {
@@ -96,7 +105,6 @@ class YandexAIAgent(
                 val toolCallWithResult = call.copy(result = result)
                 executedCalls.add(toolCallWithResult)
                 rawResults[call.toolName] = result
-
                 currentContext = result
             }
         }
@@ -109,53 +117,46 @@ class YandexAIAgent(
     }
 
     private fun buildContextMessage(userCommand: String, previousResults: List<ToolCall>): String {
-        return if (previousResults.isEmpty()) {
-            """
-            ЗАДАЧА: "$userCommand"
+        if (previousResults.isEmpty()) {
+            return """
+            ЗАДАЧА ПОЛЬЗОВАТЕЛЯ: "$userCommand"
             
-            ДЕЙСТВИЕ 1: Верни JSON для первого инструмента.
-            Пример: {"tools": [{"name": "check_crypto_rates", "params": {"coins": ["Bitcoin", "Ethereum"]}}]}
-            """.trimIndent()
-        } else {
-            val lastResult = previousResults.last()
-
-            // Формируем историю, но кратко для старых, подробно для последнего
-            val history = previousResults.mapIndexed { index, call ->
-                if (index == previousResults.lastIndex) {
-                    "⬇️ ПОСЛЕДНИЙ РЕЗУЛЬТАТ (${call.toolName}):\n${call.result}" // Полный результат для контекста
-                } else {
-                    "✔ ${call.toolName}: выполнен"
-                }
-            }.joinToString("\n")
-
-            """
-            ЗАДАЧА: "$userCommand"
-            
-            ИСТОРИЯ:
-            $history
-            
-            ТВОЯ ЦЕЛЬ: Используя "ПОСЛЕДНИЙ РЕЗУЛЬТАТ", вызови следующий инструмент.
-            
-            ЕСЛИ ПОСЛЕДНИЙ БЫЛ check_crypto_rates:
-            -> Вызови summarize_data.
-            -> Параметр "data" должен содержать ВЕСЬ JSON из последнего результата.
-            -> Пример: {"tools": [{"name": "summarize_data", "params": {"data_type": "crypto_rates", "data": <ВСТАВЬ_СЮДА_ВЕСЬ_JSON_РЕЗУЛЬТАТ>}}]}
-            
-            ЕСЛИ ПОСЛЕДНИЙ БЫЛ summarize_data:
-            -> Вызови write_file.
-            -> Параметр "content" должен быть текстом из последнего результата.
-            -> Параметр "path" - имя файла из задачи (например "rates.txt").
-            -> Параметр "path" ДОЛЖЕН начинаться с "mcp-output/" (например "mcp-output/rates.txt").
-            -> Пример: {"tools": [{"name": "write_file", "params": {"path": "rates.txt", "content": "<ВСТАВЬ_СЮДА_ТЕКСТ_РЕЗУЛЬТАТА>"}}]}
-            -> В поле "content" ты ДОЛЖЕН скопировать ВЕСЬ текст из "Результат последнего инструмента" выше.
-            -> НЕ пиши плейсхолдеры. Копируй реальные данные.
-            
-            ЕСЛИ ПОСЛЕДНИЙ БЫЛ write_file:
-            -> Задача завершена. Ответь текстом "Файл сохранен."
-            
-            Верни ТОЛЬКО JSON с инструментом.
+            ТВОЯ ЦЕЛЬ: Определить первый шаг.
+            ВЕРНИ JSON с одним инструментом.
+            Пример формата: {"tools": [{"name": "check_crypto_rates", "params": {"coins": ["Bitcoin"]}}]}
             """.trimIndent()
         }
+
+        val lastResult = previousResults.last()
+
+        // Условие раннего выхода: если файл успешно записан, останавливаемся
+        if (lastResult.toolName == "write_file" && !lastResult.result.startsWith("Error")) {
+            return "STOP_SUCCESS"
+        }
+
+        val history = previousResults.joinToString("\n") { "✔ ${it.toolName}: Выполнено" }
+
+        return """
+            ЗАДАЧА: "$userCommand"
+            
+            ИСТОРИЯ ВЫПОЛНЕНИЯ:
+            $history
+            
+            ⬇️ РЕЗУЛЬТАТ ПОСЛЕДНЕГО ШАГА (${lastResult.toolName}):
+            ${lastResult.result}
+            
+            ТВОЯ ЦЕЛЬ: Вызвать следующий инструмент, используя ЭТОТ результат.
+            
+            ИНСТРУКЦИИ:
+            1. Если это результат check_crypto_rates -> вызови summarize_data. 
+               Скопируй ВЕСЬ JSON из результата выше в параметр "data".
+            
+            2. Если это результат summarize_data -> вызови write_file.
+               Скопируй ВЕСЬ текст из результата выше в параметр "content".
+               В параметр "path" укажи имя файла (обязательно добавь префикс "mcp-output/").
+            
+            ВЕРНИ ТОЛЬКО JSON с инструментом.
+        """.trimIndent()
     }
 
     private suspend fun buildSystemPrompt(): String {
@@ -165,41 +166,32 @@ class YandexAIAgent(
                 filesystemClient.listTools()
 
         return """
-            Ты AI-агент. Твоя задача - выполнять цепочку действий, ПЕРЕДАВАЯ ДАННЫЕ между инструментами.
+            Ты AI-агент. Твоя задача - выполнять цепочку действий для решения задачи пользователя.
             
-            ИНСТРУМЕНТЫ:
-            ${allTools.joinToString("\n") { "- ${it.name}: ${it.description} Params: ${it.parameters}" }}
+            ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
+            ${allTools.joinToString("\n") { "- ${it.name}: ${it.description} (params: ${it.parameters})" }}
             
-            ВАЖНО:
-            1. Никогда не вызывай инструмент с пустыми параметрами, если они обязательны.
-            2. Ты должен явно копировать данные из вывода предыдущего шага во ввод следующего.
-            3. Формат ответа - JSON: {"tools": [{"name": "...", "params": {...}}]}
-            4. ВАЖНО: При сохранении файлов ВСЕГДА используй папку "mcp-output/".
-               Пример: "path": "mcp-output/rates.txt" (А НЕ просто "rates.txt")
+            ПРАВИЛА:
+            1. Всегда передавай вывод одного инструмента на вход следующему (копируй данные целиком).
+            2. Формат ответа - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
+            3. НЕ используй Markdown блоки (```
+            4. При записи файлов всегда используй папку "mcp-output/".
         """.trimIndent()
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        // ИСПРАВЛЕННЫЙ REGEX!
-        val markdownRegex = Regex("``````", RegexOption.DOT_MATCHES_ALL)
-        val match = markdownRegex.find(response)
+        // Надежный способ извлечения JSON: ищем первую { и последнюю }
+        val jsonStartIndex = response.indexOf('{')
+        val jsonEndIndex = response.lastIndexOf('}')
 
-        var jsonString = if (match != null) {
-            match.groupValues[1].trim()
-        } else {
-            val start = response.indexOf('{')
-            val end = response.lastIndexOf('}')
-            if (start != -1 && end != -1 && end > start) {
-                response.substring(start, end + 1)
-            } else {
-                return emptyList()
-            }
+        // Если скобок нет или порядок нарушен — считаем это просто текстом
+        if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonEndIndex <= jsonStartIndex) {
+            return emptyList()
         }
 
-        jsonString = jsonString.replace("\uFEFF", "")
+        val jsonString = response.substring(jsonStartIndex, jsonEndIndex + 1)
 
         return try {
-            // Парсим в JsonElement
             val root = json.parseToJsonElement(jsonString).jsonObject
             val toolsArray = root["tools"]?.jsonArray
 
@@ -211,10 +203,12 @@ class YandexAIAgent(
                 val name = toolElement["name"]?.jsonPrimitive?.content ?: "unknown"
                 val paramsElement = toolElement["params"]
 
+                // Преобразуем параметры в Map<String, Any>, корректно обрабатывая вложенные JSON объекты
                 val cleanParams: Map<String, Any> = when (paramsElement) {
                     is JsonObject -> paramsElement.mapValues { (_, value) ->
                         when (value) {
                             is JsonPrimitive -> if (value.isString) value.content else value.toString()
+                            // Если параметр - это объект (например, data), превращаем его обратно в строку
                             is JsonObject -> value.toString()
                             is JsonArray -> {
                                 if (value.all { it is JsonPrimitive && it.isString }) {
