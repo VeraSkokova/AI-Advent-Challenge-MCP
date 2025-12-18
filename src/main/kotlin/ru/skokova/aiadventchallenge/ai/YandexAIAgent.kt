@@ -111,23 +111,46 @@ class YandexAIAgent(
     private fun buildContextMessage(userCommand: String, previousResults: List<ToolCall>): String {
         return if (previousResults.isEmpty()) {
             """
-            Задача пользователя: "$userCommand"
+            ЗАДАЧА: "$userCommand"
             
-            ВЕРНИ JSON С ОДНИМ (!) ИНСТРУМЕНТОМ.
-            Формат: {"tools": [{"name": "check_crypto_rates", "params": {"coins": ["Bitcoin", "Ethereum"]}}]}
+            ДЕЙСТВИЕ 1: Верни JSON для первого инструмента.
+            Пример: {"tools": [{"name": "check_crypto_rates", "params": {"coins": ["Bitcoin", "Ethereum"]}}]}
             """.trimIndent()
         } else {
             val lastResult = previousResults.last()
-            val toolsSoFar = previousResults.joinToString("\n") { "  ${previousResults.indexOf(it) + 1}. ${it.toolName}" }
+
+            // Формируем историю, но кратко для старых, подробно для последнего
+            val history = previousResults.mapIndexed { index, call ->
+                if (index == previousResults.lastIndex) {
+                    "⬇️ ПОСЛЕДНИЙ РЕЗУЛЬТАТ (${call.toolName}):\n${call.result}" // Полный результат для контекста
+                } else {
+                    "✔ ${call.toolName}: выполнен"
+                }
+            }.joinToString("\n")
+
             """
-            Задача пользователя: "$userCommand"
-            Выполнено:
-            $toolsSoFar
-            Результат последнего:
-            ${lastResult.result.take(500)}
+            ЗАДАЧА: "$userCommand"
             
-            Если нужен ещё инструмент, верни JSON: {"tools": [{"name": "...", "params": {...}}]}
-            Если готово, ответь текстом.
+            ИСТОРИЯ:
+            $history
+            
+            ТВОЯ ЦЕЛЬ: Используя "ПОСЛЕДНИЙ РЕЗУЛЬТАТ", вызови следующий инструмент.
+            
+            ЕСЛИ ПОСЛЕДНИЙ БЫЛ check_crypto_rates:
+            -> Вызови summarize_data.
+            -> Параметр "data" должен содержать ВЕСЬ JSON из последнего результата.
+            -> Пример: {"tools": [{"name": "summarize_data", "params": {"data_type": "crypto_rates", "data": <ВСТАВЬ_СЮДА_ВЕСЬ_JSON_РЕЗУЛЬТАТ>}}]}
+            
+            ЕСЛИ ПОСЛЕДНИЙ БЫЛ summarize_data:
+            -> Вызови write_file.
+            -> Параметр "content" должен быть текстом из последнего результата.
+            -> Параметр "path" - имя файла из задачи (например "rates.txt").
+            -> Пример: {"tools": [{"name": "write_file", "params": {"path": "rates.txt", "content": "<ВСТАВЬ_СЮДА_ТЕКСТ_РЕЗУЛЬТАТА>"}}]}
+            
+            ЕСЛИ ПОСЛЕДНИЙ БЫЛ write_file:
+            -> Задача завершена. Ответь текстом "Файл сохранен."
+            
+            Верни ТОЛЬКО JSON с инструментом.
             """.trimIndent()
         }
     }
@@ -139,19 +162,15 @@ class YandexAIAgent(
                 filesystemClient.listTools()
 
         return """
-            Ты AI-агент.
+            Ты AI-агент. Твоя задача - выполнять цепочку действий, ПЕРЕДАВАЯ ДАННЫЕ между инструментами.
+            
             ИНСТРУМЕНТЫ:
-            ${allTools.joinToString("\n") { "- ${it.name}: ${it.description}" }}
+            ${allTools.joinToString("\n") { "- ${it.name}: ${it.description} Params: ${it.parameters}" }}
             
-            ПАЙПЛАЙН:
-            1. check_crypto_rates
-            2. summarize_data
-            3. write_file
-            
-            ПРАВИЛА:
-            1. Возвращай JSON: {"tools": [{"name": "...", "params": {...}}]}
-            2. НЕ ИСПОЛЬЗУЙ markdown для JSON.
-            3. Params могут быть объектами.
+            ВАЖНО:
+            1. Никогда не вызывай инструмент с пустыми параметрами, если они обязательны.
+            2. Ты должен явно копировать данные из вывода предыдущего шага во ввод следующего.
+            3. Формат ответа - JSON: {"tools": [{"name": "...", "params": {...}}]}
         """.trimIndent()
     }
 
