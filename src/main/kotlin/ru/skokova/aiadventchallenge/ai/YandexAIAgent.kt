@@ -141,8 +141,13 @@ class YandexAIAgent(
                     result.contains("\"status\": \"success\"")) {
                     logger.info("✅ Informational tool '${call.toolName}' completed successfully. Stopping pipeline.")
                     return AgentResponse(
-                        "Запрос выполнен успешно. Результат:
-$result",
+                        """
+                                  Эмулятор успешно запущен!
+        
+                                  Примечание: Эмулятор загружается в фоне. 
+                                  Это может занять 2-3 минуты. 
+                                  Проверьте список устройств позже.
+                                  """.trimIndent(),
                         executedCalls,
                         rawResults
                     )
@@ -154,9 +159,9 @@ $result",
                     result.contains("\"status\": \"success\"")) {
                     logger.info("✅ Emulator started successfully and no APK mentioned. Stopping pipeline.")
                     return AgentResponse(
-                        "Эмулятор успешно запущен!
+                        """Эмулятор успешно запущен!
 
-Примечание: Эмулятор загружается в фоне. Это может занять 2-3 минуты. Проверьте список устройств позже.",
+                        Примечание: Эмулятор загружается в фоне. Это может занять 2-3 минуты. Проверьте список устройств позже.""",
                         executedCalls,
                         rawResults
                     )
