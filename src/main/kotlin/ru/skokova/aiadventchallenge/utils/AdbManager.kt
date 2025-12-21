@@ -152,21 +152,41 @@ class AdbManager {
     /**
      * Выполнение команды с логированием
      */
-    private fun executeCommandSimple(command: List<String>): CommandResult {
+    private fun executeCommandSimple(command: List<String>, logOutput: Boolean = false): CommandResult {
+        if (logOutput) {
+            logger.info("🔧 Executing: ${command.joinToString(" ")}")
+        }
+        
         return try {
             val process = ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .start()
             
             val output = process.inputStream.bufferedReader().use { it.readText() }
-            val exitCode = process.waitFor()
+            val exitCode = process.waitFor(5, TimeUnit.SECONDS)
+            
+            if (!exitCode) {
+                process.destroyForcibly()
+            }
+            
+            val actualExitCode = process.exitValue()
+            
+            if (logOutput) {
+                logger.info("📤 Exit code: $actualExitCode")
+                if (output.isNotBlank()) {
+                    logger.info("📤 Output: ${output.take(200)}")
+                }
+            }
             
             CommandResult(
-                success = exitCode == 0,
+                success = actualExitCode == 0,
                 output = output,
-                error = if (exitCode != 0) output else ""
+                error = if (actualExitCode != 0) output else ""
             )
         } catch (e: Exception) {
+            if (logOutput) {
+                logger.warn("⚠️ Command failed: ${e.message}")
+            }
             CommandResult(
                 success = false,
                 output = "",
@@ -298,31 +318,53 @@ class AdbManager {
         try {
             // Шаг 1: Принудительное завершение ВСЕХ процессов эмулятора через taskkill
             if (isWindows) {
-                logger.info("🔨 Killing emulator.exe processes...")
-                executeCommandSimple(listOf("taskkill", "/F", "/IM", "emulator.exe", "/T"))
-                Thread.sleep(1000)
+                logger.info("🔨 Step 1: Killing emulator.exe processes...")
+                val result1 = executeCommandSimple(
+                    listOf("taskkill", "/F", "/IM", "emulator.exe", "/T"),
+                    logOutput = true
+                )
+                Thread.sleep(1500)
                 
-                logger.info("🔨 Killing qemu-system-x86_64.exe processes...")
-                executeCommandSimple(listOf("taskkill", "/F", "/IM", "qemu-system-x86_64.exe", "/T"))
-                Thread.sleep(1000)
+                logger.info("🔨 Step 2: Killing qemu-system-x86_64.exe processes...")
+                val result2 = executeCommandSimple(
+                    listOf("taskkill", "/F", "/IM", "qemu-system-x86_64.exe", "/T"),
+                    logOutput = true
+                )
+                Thread.sleep(1500)
+                
+                // Проверяем что процессы убиты
+                logger.info("🔍 Step 3: Verifying processes are killed...")
+                val checkResult = executeCommandSimple(
+                    listOf("powershell", "-Command", 
+                        "Get-Process | Where-Object {\$_.ProcessName -like '*emulator*'} | Select-Object ProcessName, Id"),
+                    logOutput = true
+                )
+                
+                if (checkResult.output.contains("emulator")) {
+                    logger.warn("⚠️ Emulator processes still running!")
+                    logger.warn("Output: ${checkResult.output}")
+                } else {
+                    logger.info("✅ All emulator processes killed")
+                }
             } else {
                 // Для Unix-подобных систем
-                executeCommandSimple(listOf("pkill", "-9", "-f", "emulator"))
+                executeCommandSimple(listOf("pkill", "-9", "-f", "emulator"), logOutput = true)
                 Thread.sleep(1000)
-                executeCommandSimple(listOf("pkill", "-9", "-f", "qemu-system"))
+                executeCommandSimple(listOf("pkill", "-9", "-f", "qemu-system"), logOutput = true)
                 Thread.sleep(1000)
             }
             
             // Шаг 2: Перезапуск ADB сервера для очистки всех соединений
             if (adbPath != null) {
-                logger.info("🔄 Restarting ADB server...")
-                executeCommandSimple(listOf(adbPath, "kill-server"))
-                Thread.sleep(1000)
-                executeCommandSimple(listOf(adbPath, "start-server"))
-                Thread.sleep(1000)
+                logger.info("🔄 Step 4: Restarting ADB server...")
+                executeCommandSimple(listOf(adbPath, "kill-server"), logOutput = true)
+                Thread.sleep(1500)
+                executeCommandSimple(listOf(adbPath, "start-server"), logOutput = true)
+                Thread.sleep(1500)
             }
             
             // Шаг 3: Удаляем lock файлы AVD если они существуют
+            logger.info("🗑️ Step 5: Deleting AVD lock files...")
             val userHome = System.getProperty("user.home")
             val avdPath = if (isWindows) {
                 "$userHome\\.android\\avd"
@@ -332,6 +374,7 @@ class AdbManager {
             
             val avdDir = File(avdPath)
             if (avdDir.exists()) {
+                var lockFilesDeleted = 0
                 avdDir.listFiles()?.forEach { avdFolder ->
                     if (avdFolder.isDirectory) {
                         val lockFiles = avdFolder.listFiles { file -> 
@@ -339,20 +382,25 @@ class AdbManager {
                         }
                         lockFiles?.forEach { lockFile ->
                             try {
-                                lockFile.delete()
-                                logger.info("🗑️ Deleted lock file: ${lockFile.name}")
+                                if (lockFile.delete()) {
+                                    lockFilesDeleted++
+                                    logger.info("  ✓ Deleted: ${lockFile.name}")
+                                }
                             } catch (e: Exception) {
-                                logger.debug("Could not delete lock file: ${lockFile.name}")
+                                logger.debug("  ✗ Could not delete: ${lockFile.name}")
                             }
                         }
                     }
                 }
+                logger.info("✅ Deleted $lockFilesDeleted lock files")
+            } else {
+                logger.info("ℹ️ AVD directory not found: $avdPath")
             }
             
-            logger.info("✅ Cleanup completed")
+            logger.info("✅ Cleanup completed successfully")
         } catch (e: Exception) {
             logger.warn("⚠️ Cleanup warning: ${e.message}")
-            // Не критично, продолжаем
+            e.printStackTrace()
         }
     }
     
@@ -388,13 +436,25 @@ class AdbManager {
             
             val process = processBuilder.start()
             
-            logger.info("✅ Emulator process started with PID: ${process.pid()}")
+            // Ждём немного и проверяем что процесс запустился
+            Thread.sleep(2000)
             
-            return CommandResult(
-                success = true,
-                output = "Emulator started with PID: ${process.pid()}. Waiting for device...",
-                error = ""
-            )
+            if (process.isAlive) {
+                logger.info("✅ Emulator process started with PID: ${process.pid()}")
+                return CommandResult(
+                    success = true,
+                    output = "Emulator started with PID: ${process.pid()}. Waiting for device...",
+                    error = ""
+                )
+            } else {
+                val exitCode = process.exitValue()
+                logger.error("❌ Emulator process died immediately with exit code: $exitCode")
+                return CommandResult(
+                    success = false,
+                    output = "",
+                    error = "Emulator process died immediately with exit code: $exitCode"
+                )
+            }
         } catch (e: Exception) {
             logger.error("❌ Failed to start emulator", e)
             return CommandResult(
