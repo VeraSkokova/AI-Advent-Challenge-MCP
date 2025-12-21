@@ -265,12 +265,20 @@ class YandexAIAgent(
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        // Удаляем markdown блоки, если есть
-        val cleanedResponse = response
-            .replace("```json", "")
-            .replace("```", "")
-            .trim()
+        // Удаляем markdown блоки построчно
+        val lines = response.lines().toMutableList()
         
+        // Удаляем первую строку если она содержит ```
+        if (lines.isNotEmpty() && lines.first().trim().startsWith("```")) {
+            lines.removeAt(0)
+        }
+        
+        // Удаляем последнюю строку если она содержит ```
+        if (lines.isNotEmpty() && lines.last().trim().startsWith("```")) {
+            lines.removeAt(lines.lastIndex)
+        }
+        
+        val cleanedResponse = lines.joinToString("\n").trim()
         logger.debug("🧼 Cleaned response: $cleanedResponse")
         
         // Надежное извлечение JSON с учетом вложенности скобок
@@ -297,7 +305,7 @@ class YandexAIAgent(
         }
         
         if (jsonEndIndex == -1) {
-            logger.warn("⚠️ No matching '}' found in response")
+            logger.warn("⚠️ No matching '}' found in response (depth: $depth)")
             return emptyList()
         }
 
