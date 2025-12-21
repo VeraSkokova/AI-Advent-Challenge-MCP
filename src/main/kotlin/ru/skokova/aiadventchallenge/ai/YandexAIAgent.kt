@@ -43,6 +43,15 @@ class YandexAIAgent(
         prettyPrint = false
         coerceInputValues = true
     }
+    
+    // Список инструментов, которые являются информационными (не требуют дальнейших действий)
+    private val informationalTools = setOf(
+        "list_devices",
+        "check_adb",
+        "get_logcat",
+        "list_reminders",
+        "get_stats"
+    )
 
     suspend fun executeCommand(command: String): AgentResponse {
         logger.info("🤖 Processing command: $command")
@@ -108,6 +117,16 @@ class YandexAIAgent(
                 executedCalls.add(toolCallWithResult)
                 rawResults[call.toolName] = result
                 currentContext = result
+                
+                // Ранний выход для информационных инструментов, которые успешно выполнились
+                if (call.toolName in informationalTools && result.contains("\"status\": \"success\"")) {
+                    logger.info("✅ Informational tool '${call.toolName}' completed successfully. Stopping pipeline.")
+                    return AgentResponse(
+                        "Запрос выполнен успешно. Результат:\n$result",
+                        executedCalls,
+                        rawResults
+                    )
+                }
             }
         }
 
@@ -197,6 +216,7 @@ class YandexAIAgent(
             3. НЕ используй Markdown блоки (```
             4. При записи файлов всегда используй папку "mcp-output/".
             5. Для Android-задач следуй последовательности: check_adb -> start_emulator -> wait_for_device -> install_apk -> start_app
+            6. Если пользователь просит просто "проверить" или "показать" информацию - вызови ОДИН инструмент и останови выполнение.
         """.trimIndent()
     }
 
