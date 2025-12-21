@@ -174,17 +174,22 @@ class YandexAIAgent(
     }
 
     private suspend fun buildSystemPrompt(): String {
-        val allTools = reminderMcpServer.getToolsList() +
-                cryptoCurrencyMcpServer.getToolsList() +
-                summarizationMcpServer.getToolsList() +
-                filesystemClient.listTools() +
-                androidEnvironmentMcpServer.getToolsList()
+        val allTools = mutableListOf<ToolInfo>()
+        allTools.addAll(reminderMcpServer.getToolsList())
+        allTools.addAll(cryptoCurrencyMcpServer.getToolsList())
+        allTools.addAll(summarizationMcpServer.getToolsList())
+        allTools.addAll(filesystemClient.listTools())
+        allTools.addAll(androidEnvironmentMcpServer.getToolsList())
+
+        val toolsDescription = allTools.joinToString("\n") { tool ->
+            "- ${tool.name}: ${tool.description} (params: ${tool.parameters.joinToString(", ")})"
+        }
 
         return """
             Ты AI-агент. Твоя задача - выполнять цепочку действий для решения задачи пользователя.
             
             ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
-            ${allTools.joinToString("\n") { "- ${it.name}: ${it.description} (params: ${it.parameters})" }}
+            $toolsDescription
             
             ПРАВИЛА:
             1. Всегда передавай вывод одного инструмента на вход следующему (копируй данные целиком).
