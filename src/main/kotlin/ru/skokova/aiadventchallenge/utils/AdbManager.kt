@@ -296,31 +296,59 @@ class AdbManager {
         logger.info("🧹 Cleaning up old emulator processes...")
         
         try {
-            if (adbPath != null) {
-                // Пытаемся корректно завершить эмулятор через adb
-                val killResult = executeCommandSimple(listOf(adbPath, "emu", "kill"))
-                if (killResult.success) {
-                    logger.info("✅ Emulator stopped via adb")
-                }
-                
-                // Перезапускаем ADB сервер для очистки
-                executeCommandSimple(listOf(adbPath, "kill-server"))
-                Thread.sleep(500)
-                executeCommandSimple(listOf(adbPath, "start-server"))
-            }
-            
-            // Убиваем процессы эмулятора принудительно (для Windows)
+            // Шаг 1: Принудительное завершение ВСЕХ процессов эмулятора через taskkill
             if (isWindows) {
+                logger.info("🔨 Killing emulator.exe processes...")
                 executeCommandSimple(listOf("taskkill", "/F", "/IM", "emulator.exe", "/T"))
+                Thread.sleep(1000)
+                
+                logger.info("🔨 Killing qemu-system-x86_64.exe processes...")
                 executeCommandSimple(listOf("taskkill", "/F", "/IM", "qemu-system-x86_64.exe", "/T"))
+                Thread.sleep(1000)
             } else {
                 // Для Unix-подобных систем
-                executeCommandSimple(listOf("pkill", "-f", "emulator"))
-                executeCommandSimple(listOf("pkill", "-f", "qemu-system"))
+                executeCommandSimple(listOf("pkill", "-9", "-f", "emulator"))
+                Thread.sleep(1000)
+                executeCommandSimple(listOf("pkill", "-9", "-f", "qemu-system"))
+                Thread.sleep(1000)
             }
             
-            // Даем время на очистку
-            Thread.sleep(1000)
+            // Шаг 2: Перезапуск ADB сервера для очистки всех соединений
+            if (adbPath != null) {
+                logger.info("🔄 Restarting ADB server...")
+                executeCommandSimple(listOf(adbPath, "kill-server"))
+                Thread.sleep(1000)
+                executeCommandSimple(listOf(adbPath, "start-server"))
+                Thread.sleep(1000)
+            }
+            
+            // Шаг 3: Удаляем lock файлы AVD если они существуют
+            val userHome = System.getProperty("user.home")
+            val avdPath = if (isWindows) {
+                "$userHome\\.android\\avd"
+            } else {
+                "$userHome/.android/avd"
+            }
+            
+            val avdDir = File(avdPath)
+            if (avdDir.exists()) {
+                avdDir.listFiles()?.forEach { avdFolder ->
+                    if (avdFolder.isDirectory) {
+                        val lockFiles = avdFolder.listFiles { file -> 
+                            file.name.endsWith(".lock") || file.name.contains("lock")
+                        }
+                        lockFiles?.forEach { lockFile ->
+                            try {
+                                lockFile.delete()
+                                logger.info("🗑️ Deleted lock file: ${lockFile.name}")
+                            } catch (e: Exception) {
+                                logger.debug("Could not delete lock file: ${lockFile.name}")
+                            }
+                        }
+                    }
+                }
+            }
+            
             logger.info("✅ Cleanup completed")
         } catch (e: Exception) {
             logger.warn("⚠️ Cleanup warning: ${e.message}")
