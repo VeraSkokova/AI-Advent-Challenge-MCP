@@ -72,8 +72,6 @@ class YandexAIAgent(
         val mentionsApk = command.lowercase().contains("apk") || 
                          command.lowercase().contains("прилож") ||
                          command.lowercase().contains("установ")
-        
-        logger.debug("Query type: ${if (isActionQuery) "ACTION" else "INFORMATIONAL"}, mentions APK: $mentionsApk")
 
         val systemPrompt = buildSystemPrompt()
         val executedCalls = mutableListOf<ToolCall>()
@@ -106,7 +104,6 @@ class YandexAIAgent(
             logger.info("📋 LLM Response: ${response.take(300)}...")
 
             val toolCalls = parseToolCalls(response)
-            logger.info("🔍 Parsed ${toolCalls.size} tool calls")
 
             // Если инструментов нет, значит LLM вернула финальный текстовый ответ
             if (toolCalls.isEmpty()) {
@@ -223,13 +220,8 @@ class YandexAIAgent(
             
             ВАЖНЫЕ ПРАВИЛА:
             1. ВСЕГДА извлекай параметры из ИСХОДНОЙ ЗАДАЧИ.
-               Пример: если задача "Запусти эмулятор Pixel_5", то {"avdName": "Pixel_5"}.
-            
-            2. Если последний инструмент вернул ошибку "Missing required parameter" или "Timeout",
-               НЕ продолжай! Верни текстовый ответ об ошибке.
-            
+            2. Если последний инструмент вернул ошибку, НЕ продолжай!
             3. Для crypto -> summarize -> write_file: копируй данные между шагами.
-            
             4. Для Android: start_emulator -> (остановись если нет APK в задаче)
             
             ВЕРНИ ТОЛЬКО JSON с инструментом и параметрами.
@@ -259,67 +251,28 @@ class YandexAIAgent(
             1. ВСЕГДА извлекай параметры из текста задачи пользователя!
             2. Формат ответа - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
             3. НЕ используй Markdown блоки (```)
-            4. Если инструмент вернул ошибку, НЕ продолжай вызывать другие инструменты. Верни пустой JSON {"tools": []}.
+            4. Если инструмент вернул ошибку, НЕ продолжай!
             5. При записи файлов используй папку "mcp-output/".
         """.trimIndent()
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        // Удаляем markdown блоки построчно
-        val lines = response.lines().toMutableList()
-        
-        // Удаляем первую строку если она содержит ```
-        if (lines.isNotEmpty() && lines.first().trim().startsWith("```")) {
-            lines.removeAt(0)
-        }
-        
-        // Удаляем последнюю строку если она содержит ```
-        if (lines.isNotEmpty() && lines.last().trim().startsWith("```")) {
-            lines.removeAt(lines.lastIndex)
-        }
-        
-        val cleanedResponse = lines.joinToString("\n").trim()
-        logger.debug("🧼 Cleaned response: $cleanedResponse")
-        
-        // Надежное извлечение JSON с учетом вложенности скобок
-        val jsonStartIndex = cleanedResponse.indexOf('{')
-        if (jsonStartIndex == -1) {
-            logger.warn("⚠️ No '{' found in response")
-            return emptyList()
-        }
-        
-        // Подсчитываем вложенность скобок, чтобы найти закрывающую
-        var depth = 0
-        var jsonEndIndex = -1
-        for (i in jsonStartIndex until cleanedResponse.length) {
-            when (cleanedResponse[i]) {
-                '{' -> depth++
-                '}' -> {
-                    depth--
-                    if (depth == 0) {
-                        jsonEndIndex = i
-                        break
-                    }
-                }
-            }
-        }
-        
-        if (jsonEndIndex == -1) {
-            logger.warn("⚠️ No matching '}' found in response (depth: $depth)")
+        // Надежный способ извлечения JSON: ищем первую { и последнюю }
+        val jsonStartIndex = response.indexOf('{')
+        val jsonEndIndex = response.lastIndexOf('}')
+
+        // Если скобок нет или порядок нарушен — считаем это просто текстом
+        if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonEndIndex <= jsonStartIndex) {
             return emptyList()
         }
 
-        val jsonString = cleanedResponse.substring(jsonStartIndex, jsonEndIndex + 1)
-        logger.debug("📦 Extracted JSON: $jsonString")
+        val jsonString = response.substring(jsonStartIndex, jsonEndIndex + 1)
 
         return try {
             val root = json.parseToJsonElement(jsonString).jsonObject
             val toolsArray = root["tools"]?.jsonArray
 
-            if (toolsArray.isNullOrEmpty()) {
-                logger.warn("⚠️ No tools array found or empty")
-                return emptyList()
-            }
+            if (toolsArray.isNullOrEmpty()) return emptyList()
 
             toolsArray.mapNotNull { toolElement ->
                 if (toolElement !is JsonObject) return@mapNotNull null
