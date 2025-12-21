@@ -71,23 +71,34 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
                 "get_logcat" -> getLogcat(params)
                 else -> {
                     logger.error("❌ Unknown tool: $toolName")
-                    json.encodeToString(
-                        mapOf(
-                            "error" to "Unknown tool: $toolName",
-                            "available_tools" to getToolsList().map { it.name }
-                        )
-                    )
+                    buildJsonError("Unknown tool: $toolName", mapOf("available_tools" to getToolsList().map { it.name }))
                 }
             }
         } catch (e: Exception) {
             logger.error("❌ Error executing $toolName", e)
-            json.encodeToString(
-                mapOf(
-                    "error" to "Execution failed: ${e.message}",
-                    "tool" to toolName
-                )
-            )
+            buildJsonError("Execution failed: ${e.message}", mapOf("tool" to toolName))
         }
+    }
+    
+    /**
+     * Helper для построения JSON с ошибкой
+     */
+    private fun buildJsonError(message: String, extra: Map<String, Any> = emptyMap()): String {
+        val errorMap = mutableMapOf<String, String>("error" to message)
+        extra.forEach { (k, v) -> 
+            errorMap[k] = when (v) {
+                is List<*> -> v.joinToString(", ")
+                else -> v.toString()
+            }
+        }
+        return json.encodeToString(errorMap)
+    }
+    
+    /**
+     * Helper для построения успешного JSON ответа
+     */
+    private fun buildJsonSuccess(data: Map<String, String>): String {
+        return json.encodeToString(data)
     }
     
     /**
@@ -97,22 +108,16 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
         val result = adbManager.checkAdb()
         
         return if (result.success) {
-            json.encodeToString(
-                mapOf(
-                    "status" to "success",
-                    "message" to "ADB is available",
-                    "version" to result.output
-                )
-            )
+            buildJsonSuccess(mapOf(
+                "status" to "success",
+                "message" to "ADB is available",
+                "version" to result.output
+            ))
         } else {
-            json.encodeToString(
-                mapOf(
-                    "status" to "error",
-                    "message" to "ADB not found",
-                    "error" to result.error,
-                    "hint" to "Please install Android SDK and set ANDROID_HOME environment variable"
-                )
-            )
+            buildJsonError("ADB not found", mapOf(
+                "error" to result.error,
+                "hint" to "Please install Android SDK and set ANDROID_HOME environment variable"
+            ))
         }
     }
     
@@ -122,18 +127,15 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
     private fun listDevices(): String {
         val devices = adbManager.listDevices()
         
-        return json.encodeToString(
-            mapOf(
-                "status" to "success",
-                "count" to devices.size,
-                "devices" to devices.map {
-                    mapOf(
-                        "serial" to it.serialNumber,
-                        "state" to it.state
-                    )
-                }
-            )
-        )
+        val devicesJson = devices.map { 
+            "\"${it.serialNumber}\": \"${it.state}\""
+        }.joinToString(", ", "{", "}")
+        
+        return buildJsonSuccess(mapOf(
+            "status" to "success",
+            "count" to devices.size.toString(),
+            "devices" to devicesJson
+        ))
     }
     
     /**
@@ -141,31 +143,23 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
      */
     private fun startEmulator(params: Map<String, Any>): String {
         val avdName = params["avdName"]?.toString() 
-            ?: return json.encodeToString(
-                mapOf("error" to "Missing required parameter: avdName")
-            )
+            ?: return buildJsonError("Missing required parameter: avdName")
         
         val result = adbManager.startEmulator(avdName)
         
         return if (result.success) {
-            json.encodeToString(
-                mapOf(
-                    "status" to "success",
-                    "message" to "Emulator started",
-                    "avdName" to avdName,
-                    "output" to result.output,
-                    "note" to "Use wait_for_device to ensure the emulator is fully booted"
-                )
-            )
+            buildJsonSuccess(mapOf(
+                "status" to "success",
+                "message" to "Emulator started",
+                "avdName" to avdName,
+                "output" to result.output,
+                "note" to "Use wait_for_device to ensure the emulator is fully booted"
+            ))
         } else {
-            json.encodeToString(
-                mapOf(
-                    "status" to "error",
-                    "message" to "Failed to start emulator",
-                    "avdName" to avdName,
-                    "error" to result.error
-                )
-            )
+            buildJsonError("Failed to start emulator", mapOf(
+                "avdName" to avdName,
+                "error" to result.error
+            ))
         }
     }
     
@@ -183,22 +177,16 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
         val result = adbManager.waitForDevice(timeout)
         
         return if (result.success) {
-            json.encodeToString(
-                mapOf(
-                    "status" to "success",
-                    "message" to "Device is ready",
-                    "output" to result.output
-                )
-            )
+            buildJsonSuccess(mapOf(
+                "status" to "success",
+                "message" to "Device is ready",
+                "output" to result.output
+            ))
         } else {
-            json.encodeToString(
-                mapOf(
-                    "status" to "error",
-                    "message" to "Device not ready",
-                    "error" to result.error,
-                    "timeout" to timeout
-                )
-            )
+            buildJsonError("Device not ready", mapOf(
+                "error" to result.error,
+                "timeout" to timeout.toString()
+            ))
         }
     }
     
@@ -207,38 +195,30 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
      */
     private fun installApk(params: Map<String, Any>): String {
         val apkPath = params["apkPath"]?.toString() 
-            ?: return json.encodeToString(
-                mapOf("error" to "Missing required parameter: apkPath")
-            )
+            ?: return buildJsonError("Missing required parameter: apkPath")
         
         val reinstall = when (val r = params["reinstall"]) {
             is Boolean -> r
             is String -> r.lowercase() in listOf("true", "yes", "1")
-            else -> true // По умолчанию разрешаем reinstall
+            else -> true
         }
         
         logger.info("📦 Installing APK: $apkPath (reinstall: $reinstall)")
         val result = adbManager.installApk(apkPath, reinstall)
         
         return if (result.success) {
-            json.encodeToString(
-                mapOf(
-                    "status" to "success",
-                    "message" to "APK installed successfully",
-                    "apkPath" to apkPath,
-                    "output" to result.output
-                )
-            )
+            buildJsonSuccess(mapOf(
+                "status" to "success",
+                "message" to "APK installed successfully",
+                "apkPath" to apkPath,
+                "output" to result.output
+            ))
         } else {
-            json.encodeToString(
-                mapOf(
-                    "status" to "error",
-                    "message" to "Failed to install APK",
-                    "apkPath" to apkPath,
-                    "error" to result.error,
-                    "output" to result.output
-                )
-            )
+            buildJsonError("Failed to install APK", mapOf(
+                "apkPath" to apkPath,
+                "error" to result.error,
+                "output" to result.output
+            ))
         }
     }
     
@@ -247,39 +227,29 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
      */
     private fun startApp(params: Map<String, Any>): String {
         val packageName = params["packageName"]?.toString() 
-            ?: return json.encodeToString(
-                mapOf("error" to "Missing required parameter: packageName")
-            )
+            ?: return buildJsonError("Missing required parameter: packageName")
         
         val activityName = params["activityName"]?.toString() 
-            ?: return json.encodeToString(
-                mapOf("error" to "Missing required parameter: activityName")
-            )
+            ?: return buildJsonError("Missing required parameter: activityName")
         
         logger.info("🚀 Starting app: $packageName/$activityName")
         val result = adbManager.startApp(packageName, activityName)
         
         return if (result.success) {
-            json.encodeToString(
-                mapOf(
-                    "status" to "success",
-                    "message" to "App started successfully",
-                    "packageName" to packageName,
-                    "activityName" to activityName,
-                    "output" to result.output
-                )
-            )
+            buildJsonSuccess(mapOf(
+                "status" to "success",
+                "message" to "App started successfully",
+                "packageName" to packageName,
+                "activityName" to activityName,
+                "output" to result.output
+            ))
         } else {
-            json.encodeToString(
-                mapOf(
-                    "status" to "error",
-                    "message" to "Failed to start app",
-                    "packageName" to packageName,
-                    "activityName" to activityName,
-                    "error" to result.error,
-                    "output" to result.output
-                )
-            )
+            buildJsonError("Failed to start app", mapOf(
+                "packageName" to packageName,
+                "activityName" to activityName,
+                "error" to result.error,
+                "output" to result.output
+            ))
         }
     }
     
@@ -288,9 +258,7 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
      */
     private fun getLogcat(params: Map<String, Any>): String {
         val packageName = params["packageName"]?.toString() 
-            ?: return json.encodeToString(
-                mapOf("error" to "Missing required parameter: packageName")
-            )
+            ?: return buildJsonError("Missing required parameter: packageName")
         
         val lines = when (val l = params["lines"]) {
             is Number -> l.toInt()
@@ -302,23 +270,17 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
         val result = adbManager.getLogcat(packageName, lines)
         
         return if (result.success) {
-            json.encodeToString(
-                mapOf(
-                    "status" to "success",
-                    "packageName" to packageName,
-                    "lines" to lines,
-                    "logs" to result.output
-                )
-            )
+            buildJsonSuccess(mapOf(
+                "status" to "success",
+                "packageName" to packageName,
+                "lines" to lines.toString(),
+                "logs" to result.output
+            ))
         } else {
-            json.encodeToString(
-                mapOf(
-                    "status" to "error",
-                    "message" to "Failed to get logcat",
-                    "packageName" to packageName,
-                    "error" to result.error
-                )
-            )
+            buildJsonError("Failed to get logcat", mapOf(
+                "packageName" to packageName,
+                "error" to result.error
+            ))
         }
     }
 }
