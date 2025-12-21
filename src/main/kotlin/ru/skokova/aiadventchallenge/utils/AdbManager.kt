@@ -38,6 +38,14 @@ data class Device(
 )
 
 /**
+ * Информация об APK
+ */
+data class ApkInfo(
+    val packageName: String,
+    val launchActivity: String?
+)
+
+/**
  * Менеджер для работы с ADB и Android эмулятором
  * Поддерживает Windows, Linux и macOS
  */
@@ -52,6 +60,10 @@ class AdbManager {
     private val androidHome = findAndroidHome()
     private val adbPath = findAdbPath()
     private val emulatorPath = findEmulatorPath()
+    private val aaptPath = findAaptPath()
+    
+    // Кэш для хранения информации о последнем установленном APK
+    private var lastInstalledApkInfo: ApkInfo? = null
     
     init {
         logger.info("🔧 AdbManager initialized")
@@ -59,7 +71,13 @@ class AdbManager {
         logger.info("📂 ANDROID_HOME: ${androidHome ?: "Not found"}")
         logger.info("🔨 ADB path: ${adbPath ?: "Not found"}")
         logger.info("📲 Emulator path: ${emulatorPath ?: "Not found"}")
+        logger.info("🔍 AAPT path: ${aaptPath ?: "Not found"}")
     }
+    
+    /**
+     * Получить информацию о последнем установленном APK
+     */
+    fun getLastInstalledApkInfo(): ApkInfo? = lastInstalledApkInfo
     
     /**
      * Поиск ANDROID_HOME
@@ -147,6 +165,81 @@ class AdbManager {
         }
         
         return null
+    }
+    
+    /**
+     * Поиск пути к aapt (Android Asset Packaging Tool)
+     */
+    private fun findAaptPath(): String? {
+        val aaptExecutable = if (isWindows) "aapt.exe" else "aapt"
+        
+        if (androidHome != null) {
+            // Ищем в build-tools
+            val buildToolsDir = File(androidHome, "build-tools")
+            if (buildToolsDir.exists()) {
+                val versions = buildToolsDir.listFiles()?.sortedByDescending { it.name } ?: emptyList()
+                for (versionDir in versions) {
+                    val aaptFile = File(versionDir, aaptExecutable)
+                    if (aaptFile.exists()) {
+                        return aaptFile.absolutePath
+                    }
+                }
+            }
+        }
+        
+        return null
+    }
+    
+    /**
+     * Извлечение информации из APK
+     */
+    fun extractApkInfo(apkPath: String): ApkInfo? {
+        if (aaptPath == null) {
+            logger.warn("⚠️ AAPT not found, cannot extract APK info")
+            return null
+        }
+        
+        try {
+            logger.info("🔍 Extracting APK info from: $apkPath")
+            
+            val result = executeCommandSimple(
+                listOf(aaptPath, "dump", "badging", apkPath),
+                logOutput = false
+            )
+            
+            if (!result.success) {
+                logger.warn("⚠️ Failed to extract APK info: ${result.error}")
+                return null
+            }
+            
+            var packageName: String? = null
+            var launchActivity: String? = null
+            
+            result.output.lines().forEach { line ->
+                when {
+                    line.startsWith("package: name=") -> {
+                        // package: name='ru.skokova.chatwithygpt' versionCode='1' versionName='1.0'
+                        packageName = line.substringAfter("name='").substringBefore("'")
+                    }
+                    line.startsWith("launchable-activity: name=") -> {
+                        // launchable-activity: name='ru.skokova.chatwithygpt.MainActivity'
+                        launchActivity = line.substringAfter("name='").substringBefore("'")
+                    }
+                }
+            }
+            
+            if (packageName != null) {
+                val info = ApkInfo(packageName!!, launchActivity)
+                logger.info("✅ Extracted APK info: package=$packageName, activity=$launchActivity")
+                return info
+            } else {
+                logger.warn("⚠️ Could not find package name in APK")
+                return null
+            }
+        } catch (e: Exception) {
+            logger.error("❌ Error extracting APK info", e)
+            return null
+        }
     }
     
     /**
@@ -499,7 +592,7 @@ class AdbManager {
     /**
      * Ожидание готовности устройства
      */
-    fun waitForDevice(timeoutSeconds: Int = 180): CommandResult {
+    fun waitForDevice(timeoutSeconds: Int = 300): CommandResult {
         if (adbPath == null) {
             return CommandResult(
                 success = false,
@@ -571,6 +664,13 @@ class AdbManager {
             )
         }
         
+        // Извлекаем информацию из APK перед установкой
+        val apkInfo = extractApkInfo(apkPath)
+        if (apkInfo != null) {
+            lastInstalledApkInfo = apkInfo
+            logger.info("💾 Saved APK info for later use: ${apkInfo.packageName}")
+        }
+        
         logger.info("📦 Installing APK: $apkPath")
         
         val command = if (reinstall) {
@@ -586,7 +686,7 @@ class AdbManager {
             logger.info("✅ APK installed successfully")
             return result.copy(
                 success = true,
-                output = "APK installed successfully"
+                output = "APK installed successfully. Package: ${apkInfo?.packageName ?: "unknown"}"
             )
         } else {
             logger.error("❌ APK installation failed")
