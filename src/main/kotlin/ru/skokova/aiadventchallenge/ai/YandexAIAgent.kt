@@ -44,17 +44,30 @@ class YandexAIAgent(
         coerceInputValues = true
     }
     
-    // Список инструментов, которые являются информационными (не требуют дальнейших действий)
-    private val informationalTools = setOf(
+    // Список инструментов, которые являются чисто информационными (не меняют состояние системы)
+    private val purelyInformationalTools = setOf(
         "list_devices",
         "check_adb",
         "get_logcat",
         "list_reminders",
         "get_stats"
     )
+    
+    // Список ключевых слов действий в запросах пользователя
+    private val actionKeywords = setOf(
+        "запусти", "запуск", "start",
+        "установи", "install",
+        "удали", "remove", "delete",
+        "создай", "create",
+        "обнови", "update"
+    )
 
     suspend fun executeCommand(command: String): AgentResponse {
         logger.info("🤖 Processing command: $command")
+        
+        // Определяем, является ли запрос действием или информационным
+        val isActionQuery = actionKeywords.any { command.lowercase().contains(it) }
+        logger.debug("Query type: ${if (isActionQuery) "ACTION" else "INFORMATIONAL"}")
 
         val systemPrompt = buildSystemPrompt()
         val executedCalls = mutableListOf<ToolCall>()
@@ -118,8 +131,11 @@ class YandexAIAgent(
                 rawResults[call.toolName] = result
                 currentContext = result
                 
-                // Ранний выход для информационных инструментов, которые успешно выполнились
-                if (call.toolName in informationalTools && result.contains("\"status\": \"success\"")) {
+                // Ранний выход ТОЛЬКО для чисто информационных запросов
+                // Не срабатывает, если это промежуточный шаг в цепочке действий
+                if (!isActionQuery && 
+                    call.toolName in purelyInformationalTools && 
+                    result.contains("\"status\": \"success\"")) {
                     logger.info("✅ Informational tool '${call.toolName}' completed successfully. Stopping pipeline.")
                     return AgentResponse(
                         "Запрос выполнен успешно. Результат:\n$result",
@@ -216,7 +232,6 @@ class YandexAIAgent(
             3. НЕ используй Markdown блоки (```
             4. При записи файлов всегда используй папку "mcp-output/".
             5. Для Android-задач следуй последовательности: check_adb -> start_emulator -> wait_for_device -> install_apk -> start_app
-            6. Если пользователь просит просто "проверить" или "показать" информацию - вызови ОДИН инструмент и останови выполнение.
         """.trimIndent()
     }
 
