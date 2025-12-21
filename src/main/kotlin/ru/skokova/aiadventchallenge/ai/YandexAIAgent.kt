@@ -141,7 +141,8 @@ class YandexAIAgent(
                     result.contains("\"status\": \"success\"")) {
                     logger.info("✅ Informational tool '${call.toolName}' completed successfully. Stopping pipeline.")
                     return AgentResponse(
-                        "Запрос выполнен успешно. Результат:\n$result",
+                        "Запрос выполнен успешно. Результат:
+$result",
                         executedCalls,
                         rawResults
                     )
@@ -153,7 +154,9 @@ class YandexAIAgent(
                     result.contains("\"status\": \"success\"")) {
                     logger.info("✅ Emulator started successfully and no APK mentioned. Stopping pipeline.")
                     return AgentResponse(
-                        "Эмулятор успешно запущен!\n\nПримечание: Эмулятор загружается в фоне. Это может занять 2-3 минуты. Проверьте список устройств позже.",
+                        "Эмулятор успешно запущен!
+
+Примечание: Эмулятор загружается в фоне. Это может занять 2-3 минуты. Проверьте список устройств позже.",
                         executedCalls,
                         rawResults
                     )
@@ -181,7 +184,7 @@ class YandexAIAgent(
             ВАЖНО: Извлекай параметры из текста задачи!
             Примеры:
             - "Запусти эмулятор Pixel_5" -> {"name": "start_emulator", "params": {"avdName": "Pixel_5"}}
-            - "Установи APK из /path/app.apk" -> {"name": "install_apk", "params": {"apkPath": "/path/app.apk"}}
+            - "Установи APK из /path/app.apk" -> {"name": "install_apk", "params": {"apkPath": "/path/app.apk", "reinstall": true}}
             
             ТВОЯ ЦЕЛЬ: Определить первый шаг.
             ВЕРНИ JSON с одним инструментом.
@@ -222,7 +225,10 @@ class YandexAIAgent(
             1. ВСЕГДА извлекай параметры из ИСХОДНОЙ ЗАДАЧИ.
             2. Если последний инструмент вернул ошибку, НЕ продолжай!
             3. Для crypto -> summarize -> write_file: копируй данные между шагами.
-            4. Для Android: start_emulator -> (остановись если нет APK в задаче)
+            4. Для Android: start_emulator -> wait_for_device -> install_apk -> start_app
+            5. ДЛЯ wait_for_device: НЕ указывай timeout (дефолт 300с достаточно)
+            6. install_apk ВСЕГДА с reinstall: true
+            7. Для start_app: НЕ указывай packageName/activityName (используется инфо из APK)
             
             ВЕРНИ ТОЛЬКО JSON с инструментом и параметрами.
         """.trimIndent()
@@ -253,6 +259,12 @@ class YandexAIAgent(
             3. НЕ используй Markdown блоки (```)
             4. Если инструмент вернул ошибку, НЕ продолжай!
             5. При записи файлов используй папку "mcp-output/".
+            
+            ANDROID РАБОЧИЙ ПРОЦЕСС:
+            1. start_emulator -> запускает эмулятор
+            2. wait_for_device -> ЖДЕТ полной загрузки (НЕ указывай timeout!)
+            3. install_apk -> устанавливает APK (ВСЕГДА reinstall: true)
+            4. start_app -> запускает приложение (НЕ указывай packageName!)
         """.trimIndent()
     }
 
