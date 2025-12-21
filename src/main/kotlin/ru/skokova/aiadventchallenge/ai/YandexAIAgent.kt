@@ -231,9 +231,9 @@ class YandexAIAgent(
             2. Если последний инструмент вернул ошибку, НЕ продолжай!
             3. Для crypto -> summarize -> write_file: копируй данные между шагами.
             4. Для Android: start_emulator -> wait_for_device -> install_apk -> start_app
-            5. ДЛЯ wait_for_device: НЕ указывай timeout (дефолт 300с достаточно)
-            6. install_apk ВСЕГДА с reinstall: true
-            7. Для start_app: НЕ указывай packageName/activityName (используется инфо из APK)
+            5. ДЛЯ wait_for_device: НЕ указывай timeout (дефолт 300с достаточно).
+            6. install_apk ВСЕГДА с reinstall: true.
+            7. Для start_app: СТРОГО ПЕРЕДАВАЙ ПУСТЫЕ ПАРАМЕТРЫ {}. НЕ указывай packageName/activityName - система сама возьмет их из установленного APK.
             
             ВЕРНИ ТОЛЬКО JSON с инструментом и параметрами.
         """.trimIndent()
@@ -261,15 +261,15 @@ class YandexAIAgent(
             ПРАВИЛА:
             1. ВСЕГДА извлекай параметры из текста задачи пользователя!
             2. Формат ответа - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
-            3. НЕ используй Markdown блоки (```)
+            3. НЕ используй Markdown блоки (```
             4. Если инструмент вернул ошибку, НЕ продолжай!
             5. При записи файлов используй папку "mcp-output/".
             
             ANDROID РАБОЧИЙ ПРОЦЕСС:
             1. start_emulator -> запускает эмулятор
-            2. wait_for_device -> ЖДЕТ полной загрузки (НЕ указывай timeout!)
+            2. wait_for_device -> ЖДЕТ полной загрузки (параметры {})
             3. install_apk -> устанавливает APK (ВСЕГДА reinstall: true)
-            4. start_app -> запускает приложение (НЕ указывай packageName!)
+            4. start_app -> запускает приложение (СТРОГО параметры {}, данные берутся из APK)
         """.trimIndent()
     }
 
