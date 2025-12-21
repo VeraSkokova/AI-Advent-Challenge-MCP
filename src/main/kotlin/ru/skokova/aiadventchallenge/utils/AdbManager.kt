@@ -178,12 +178,17 @@ class AdbManager {
             val buildToolsDir = File(androidHome, "build-tools")
             if (buildToolsDir.exists()) {
                 val versions = buildToolsDir.listFiles()?.sortedByDescending { it.name } ?: emptyList()
+                logger.info("🔍 Found ${versions.size} build-tools versions")
                 for (versionDir in versions) {
                     val aaptFile = File(versionDir, aaptExecutable)
                     if (aaptFile.exists()) {
+                        logger.info("🔍 Found aapt in version: ${versionDir.name}")
                         return aaptFile.absolutePath
                     }
                 }
+                logger.warn("⚠️ No aapt found in any build-tools version")
+            } else {
+                logger.warn("⚠️ build-tools directory not found: $buildToolsDir")
             }
         }
         
@@ -196,21 +201,26 @@ class AdbManager {
     fun extractApkInfo(apkPath: String): ApkInfo? {
         if (aaptPath == null) {
             logger.warn("⚠️ AAPT not found, cannot extract APK info")
+            logger.warn("⚠️ Install Android SDK build-tools to enable automatic package name extraction")
             return null
         }
         
         try {
             logger.info("🔍 Extracting APK info from: $apkPath")
+            logger.info("🔍 Using AAPT: $aaptPath")
             
             val result = executeCommandSimple(
-                listOf(aaptPath, "dump", "badging", apkPath),
-                logOutput = false
+                listOf(aaptPath!!, "dump", "badging", apkPath),
+                logOutput = true
             )
             
             if (!result.success) {
-                logger.warn("⚠️ Failed to extract APK info: ${result.error}")
+                logger.warn("⚠️ Failed to extract APK info")
+                logger.warn("⚠️ AAPT error: ${result.error}")
                 return null
             }
+            
+            logger.info("🔍 AAPT output (first 500 chars): ${result.output.take(500)}")
             
             var packageName: String? = null
             var launchActivity: String? = null
@@ -220,24 +230,26 @@ class AdbManager {
                     line.startsWith("package: name=") -> {
                         // package: name='ru.skokova.chatwithygpt' versionCode='1' versionName='1.0'
                         packageName = line.substringAfter("name='").substringBefore("'")
+                        logger.info("📦 Found package: $packageName")
                     }
                     line.startsWith("launchable-activity: name=") -> {
                         // launchable-activity: name='ru.skokova.chatwithygpt.MainActivity'
                         launchActivity = line.substringAfter("name='").substringBefore("'")
+                        logger.info("🚀 Found launch activity: $launchActivity")
                     }
                 }
             }
             
             if (packageName != null) {
                 val info = ApkInfo(packageName!!, launchActivity)
-                logger.info("✅ Extracted APK info: package=$packageName, activity=$launchActivity")
+                logger.info("✅ Successfully extracted APK info: package=$packageName, activity=$launchActivity")
                 return info
             } else {
                 logger.warn("⚠️ Could not find package name in APK")
                 return null
             }
         } catch (e: Exception) {
-            logger.error("❌ Error extracting APK info", e)
+            logger.error("❌ Error extracting APK info: ${e.message}", e)
             return null
         }
     }
@@ -668,7 +680,9 @@ class AdbManager {
         val apkInfo = extractApkInfo(apkPath)
         if (apkInfo != null) {
             lastInstalledApkInfo = apkInfo
-            logger.info("💾 Saved APK info for later use: ${apkInfo.packageName}")
+            logger.info("💾 Saved APK info for later use: package=${apkInfo.packageName}, activity=${apkInfo.launchActivity}")
+        } else {
+            logger.warn("⚠️ Could not extract APK info - app launch may require manual parameters")
         }
         
         logger.info("📦 Installing APK: $apkPath")
