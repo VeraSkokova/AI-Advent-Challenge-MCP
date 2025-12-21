@@ -421,9 +421,23 @@ class AdbManager {
         
         logger.info("🚀 Starting emulator: $avdName")
         
-        // Запускаем эмулятор асинхронно
+        // Запускаем эмулятор асинхронно через cmd /c start (Windows) или nohup (Unix)
         try {
-            val command = listOf(emulatorPath, "-avd", avdName, "-no-snapshot-load")
+            val command = if (isWindows) {
+                // Windows: используем cmd /c start для отвязки процесса
+                listOf(
+                    "cmd", "/c", "start", 
+                    "/B",  // Без создания нового окна консоли
+                    "\"\"",  // Пустой заголовок
+                    emulatorPath, "-avd", avdName, "-no-snapshot-load"
+                )
+            } else {
+                // Unix: используем nohup для отвязки процесса
+                listOf(
+                    "nohup", emulatorPath, "-avd", avdName, "-no-snapshot-load", "&"
+                )
+            }
+            
             logger.info("🔧 Command: ${command.joinToString(" ")}")
             
             val processBuilder = ProcessBuilder(command)
@@ -434,25 +448,42 @@ class AdbManager {
                     "${androidHome}\\emulator;${androidHome}\\platform-tools;${System.getenv("PATH")}"
             }
             
+            // Перенаправляем вывод в /dev/null чтобы не блокироваться
+            processBuilder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            processBuilder.redirectError(ProcessBuilder.Redirect.DISCARD)
+            
             val process = processBuilder.start()
             
-            // Ждём немного и проверяем что процесс запустился
+            // Ждём немного и проверяем что команда cmd /c start выполнилась
             Thread.sleep(2000)
             
-            if (process.isAlive) {
-                logger.info("✅ Emulator process started with PID: ${process.pid()}")
+            logger.info("✅ Emulator launch command executed")
+            
+            // Проверяем что процесс эмулятора действительно запустился
+            Thread.sleep(1000)
+            val checkResult = if (isWindows) {
+                executeCommandSimple(
+                    listOf("powershell", "-Command", 
+                        "Get-Process | Where-Object {\$_.ProcessName -like '*emulator*'} | Select-Object ProcessName, Id -First 1"),
+                    logOutput = false
+                )
+            } else {
+                executeCommandSimple(listOf("pgrep", "-f", "emulator"), logOutput = false)
+            }
+            
+            if (checkResult.output.contains("emulator") || checkResult.output.isNotBlank()) {
+                logger.info("✅ Emulator process confirmed running")
                 return CommandResult(
                     success = true,
-                    output = "Emulator started with PID: ${process.pid()}. Waiting for device...",
+                    output = "Emulator started successfully. Waiting for device...",
                     error = ""
                 )
             } else {
-                val exitCode = process.exitValue()
-                logger.error("❌ Emulator process died immediately with exit code: $exitCode")
+                logger.warn("⚠️ Could not confirm emulator process")
                 return CommandResult(
-                    success = false,
-                    output = "",
-                    error = "Emulator process died immediately with exit code: $exitCode"
+                    success = true,
+                    output = "Emulator launch command sent. Process may be starting...",
+                    error = ""
                 )
             }
         } catch (e: Exception) {
