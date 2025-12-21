@@ -39,12 +39,12 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
         ),
         ToolInfo(
             name = "install_apk",
-            description = "Install an APK file on the connected device",
+            description = "Install an APK file on the connected device. Returns package name and launch activity.",
             parameters = listOf("apkPath", "reinstall")
         ),
         ToolInfo(
             name = "start_app",
-            description = "Start an installed Android application",
+            description = "Start an installed Android application. If packageName is not provided, uses last installed APK info.",
             parameters = listOf("packageName", "activityName")
         ),
         ToolInfo(
@@ -169,8 +169,8 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
     private fun waitForDevice(params: Map<String, Any>): String {
         val timeout = when (val t = params["timeout"]) {
             is Number -> t.toInt()
-            is String -> t.toIntOrNull() ?: 180
-            else -> 180
+            is String -> t.toIntOrNull() ?: 300
+            else -> 300
         }
         
         logger.info("⏳ Waiting for device (timeout: ${timeout}s)")
@@ -207,12 +207,25 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
         val result = adbManager.installApk(apkPath, reinstall)
         
         return if (result.success) {
-            buildJsonSuccess(mapOf(
+            // Получаем информацию о APK
+            val apkInfo = adbManager.getLastInstalledApkInfo()
+            
+            val responseMap = mutableMapOf(
                 "status" to "success",
                 "message" to "APK installed successfully",
                 "apkPath" to apkPath,
                 "output" to result.output
-            ))
+            )
+            
+            if (apkInfo != null) {
+                responseMap["packageName"] = apkInfo.packageName
+                if (apkInfo.launchActivity != null) {
+                    responseMap["launchActivity"] = apkInfo.launchActivity
+                }
+                responseMap["note"] = "Use start_app with packageName='${apkInfo.packageName}' to launch the app"
+            }
+            
+            buildJsonSuccess(responseMap)
         } else {
             buildJsonError("Failed to install APK", mapOf(
                 "apkPath" to apkPath,
@@ -226,11 +239,26 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
      * start_app: Запуск приложения
      */
     private fun startApp(params: Map<String, Any>): String {
-        val packageName = params["packageName"]?.toString() 
-            ?: return buildJsonError("Missing required parameter: packageName")
+        var packageName = params["packageName"]?.toString()
+        var activityName = params["activityName"]?.toString()
         
-        val activityName = params["activityName"]?.toString() 
-            ?: return buildJsonError("Missing required parameter: activityName")
+        // Если packageName не указан или placeholder, используем инфо из последнего установленного APK
+        if (packageName == null || packageName.contains("your.package") || packageName.isEmpty()) {
+            val apkInfo = adbManager.getLastInstalledApkInfo()
+            if (apkInfo != null) {
+                logger.info("💾 Using last installed APK info: ${apkInfo.packageName}")
+                packageName = apkInfo.packageName
+                if (activityName == null || activityName.contains("your.activity") || activityName.isEmpty()) {
+                    activityName = apkInfo.launchActivity
+                }
+            } else {
+                return buildJsonError("Missing required parameter: packageName (and no previously installed APK info found)")
+            }
+        }
+        
+        if (activityName == null || activityName.isEmpty()) {
+            return buildJsonError("Missing required parameter: activityName")
+        }
         
         logger.info("🚀 Starting app: $packageName/$activityName")
         val result = adbManager.startApp(packageName, activityName)
