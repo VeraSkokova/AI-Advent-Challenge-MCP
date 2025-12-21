@@ -88,7 +88,7 @@ class YandexAIAgent(
             iterationCount++
             logger.info("📍 Iteration $iterationCount")
 
-            val contextMessage = buildContextMessage(currentContext, executedCalls)
+            val contextMessage = buildContextMessage(command, currentContext, executedCalls)
 
             // Если buildContextMessage вернул спец-сигнал об успехе, завершаем работу
             if (contextMessage == "STOP_SUCCESS") {
@@ -153,14 +153,18 @@ class YandexAIAgent(
         )
     }
 
-    private fun buildContextMessage(userCommand: String, previousResults: List<ToolCall>): String {
+    private fun buildContextMessage(originalCommand: String, currentContext: String, previousResults: List<ToolCall>): String {
         if (previousResults.isEmpty()) {
             return """
-            ЗАДАЧА ПОЛЬЗОВАТЕЛЯ: "$userCommand"
+            ЗАДАЧА ПОЛЬЗОВАТЕЛЯ: "$originalCommand"
+            
+            ВАЖНО: Извлекай параметры из текста задачи!
+            Примеры:
+            - "Запусти эмулятор Pixel_5" -> {"name": "start_emulator", "params": {"avdName": "Pixel_5"}}
+            - "Установи APK из /path/app.apk" -> {"name": "install_apk", "params": {"apkPath": "/path/app.apk"}}
             
             ТВОЯ ЦЕЛЬ: Определить первый шаг.
             ВЕРНИ JSON с одним инструментом.
-            Пример формата: {"tools": [{"name": "check_crypto_rates", "params": {"coins": ["Bitcoin"]}}]}
             """.trimIndent()
         }
 
@@ -179,7 +183,7 @@ class YandexAIAgent(
         val history = previousResults.joinToString("\n") { "✔ ${it.toolName}: Выполнено" }
 
         return """
-            ЗАДАЧА: "$userCommand"
+            ИСХОДНАЯ ЗАДАЧА: "$originalCommand"
             
             ИСТОРИЯ ВЫПОЛНЕНИЯ:
             $history
@@ -187,24 +191,20 @@ class YandexAIAgent(
             ⬇️ РЕЗУЛЬТАТ ПОСЛЕДНЕГО ШАГА (${lastResult.toolName}):
             ${lastResult.result}
             
-            ТВОЯ ЦЕЛЬ: Вызвать следующий инструмент, используя ЭТОТ результат.
+            ТВОЯ ЦЕЛЬ: Вызвать следующий инструмент.
             
-            ИНСТРУКЦИИ:
-            1. Если это результат check_crypto_rates -> вызови summarize_data. 
-               Скопируй ВЕСЬ JSON из результата выше в параметр "data".
+            ВАЖНЫЕ ПРАВИЛА:
+            1. ВСЕГДА извлекай параметры из ИСХОДНОЙ ЗАДАЧИ пользователя.
+               Пример: если задача "Запусти эмулятор Pixel_5", то для start_emulator используй {"avdName": "Pixel_5"}.
             
-            2. Если это результат summarize_data -> вызови write_file.
-               Скопируй ВЕСЬ текст из результата выше в параметр "content".
-               В параметр "path" укажи имя файла (обязательно добавь префикс "mcp-output/").
+            2. Если последний инструмент вернул ошибку "Missing required parameter", 
+               значит ты забыл извлечь параметр из исходной задачи!
             
-            3. Для Android-инструментов (запуск эмулятора, установка APK):
-               - Сначала check_adb
-               - Затем start_emulator (если нужно)
-               - wait_for_device для ожидания загрузки
-               - install_apk для установки
-               - start_app для запуска
+            3. Для crypto -> summarize -> write_file: копируй данные между шагами.
             
-            ВЕРНИ ТОЛЬКО JSON с инструментом.
+            4. Для Android: check_adb -> start_emulator (с avdName!) -> wait_for_device -> install_apk -> start_app
+            
+            ВЕРНИ ТОЛЬКО JSON с инструментом и параметрами.
         """.trimIndent()
     }
 
@@ -217,7 +217,8 @@ class YandexAIAgent(
         allTools.addAll(androidEnvironmentMcpServer.getToolsList())
 
         val toolsDescription = allTools.joinToString("\n") { tool ->
-            "- ${tool.name}: ${tool.description} (params: ${tool.parameters.joinToString(", ")})"
+            val paramsDesc = if (tool.parameters.isEmpty()) "no params" else tool.parameters.joinToString(", ")
+            "- ${tool.name}: ${tool.description} (params: $paramsDesc)"
         }
 
         return """
@@ -227,11 +228,11 @@ class YandexAIAgent(
             $toolsDescription
             
             ПРАВИЛА:
-            1. Всегда передавай вывод одного инструмента на вход следующему (копируй данные целиком).
+            1. ВСЕГДА извлекай параметры из текста задачи пользователя!
             2. Формат ответа - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
-            3. НЕ используй Markdown блоки (```
-            4. При записи файлов всегда используй папку "mcp-output/".
-            5. Для Android-задач следуй последовательности: check_adb -> start_emulator -> wait_for_device -> install_apk -> start_app
+            3. НЕ используй Markdown блоки (```)
+            4. Для Android-задач следуй последовательности: check_adb -> start_emulator -> wait_for_device -> install_apk -> start_app
+            5. При записи файлов используй папку "mcp-output/".
         """.trimIndent()
     }
 
