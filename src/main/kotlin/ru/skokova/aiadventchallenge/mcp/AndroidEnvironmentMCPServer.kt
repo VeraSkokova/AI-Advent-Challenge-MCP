@@ -1,6 +1,5 @@
 package ru.skokova.aiadventchallenge.mcp
 
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -14,13 +13,6 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
     private val logger = LoggerFactory.getLogger(AndroidEnvironmentMCPServer::class.java)
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     
-    @Serializable
-    data class ToolInfo(
-        val name: String,
-        val description: String,
-        val parameters: Map<String, String>
-    )
-    
     /**
      * Список доступных инструментов
      */
@@ -28,50 +20,37 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
         ToolInfo(
             name = "check_adb",
             description = "Check if ADB is available and working",
-            parameters = emptyMap()
+            parameters = emptyList()
         ),
         ToolInfo(
             name = "list_devices",
             description = "List all connected Android devices and emulators",
-            parameters = emptyMap()
+            parameters = emptyList()
         ),
         ToolInfo(
             name = "start_emulator",
             description = "Start an Android emulator by AVD name",
-            parameters = mapOf(
-                "avdName" to "string (required) - Name of the AVD to start (e.g., Pixel_5_API_34)"
-            )
+            parameters = listOf("avdName")
         ),
         ToolInfo(
             name = "wait_for_device",
             description = "Wait until device/emulator is fully booted and ready",
-            parameters = mapOf(
-                "timeout" to "int (optional) - Timeout in seconds (default: 180)"
-            )
+            parameters = listOf("timeout")
         ),
         ToolInfo(
             name = "install_apk",
             description = "Install an APK file on the connected device",
-            parameters = mapOf(
-                "apkPath" to "string (required) - Absolute path to the APK file",
-                "reinstall" to "boolean (optional) - Allow reinstall without clearing data (default: true)"
-            )
+            parameters = listOf("apkPath", "reinstall")
         ),
         ToolInfo(
             name = "start_app",
             description = "Start an installed Android application",
-            parameters = mapOf(
-                "packageName" to "string (required) - Package name (e.g., com.example.app)",
-                "activityName" to "string (required) - Activity name (e.g., .MainActivity)"
-            )
+            parameters = listOf("packageName", "activityName")
         ),
         ToolInfo(
             name = "get_logcat",
             description = "Get recent logcat entries for a specific package",
-            parameters = mapOf(
-                "packageName" to "string (required) - Package name to filter logs",
-                "lines" to "int (optional) - Number of lines to retrieve (default: 50)"
-            )
+            parameters = listOf("packageName", "lines")
         )
     )
     
