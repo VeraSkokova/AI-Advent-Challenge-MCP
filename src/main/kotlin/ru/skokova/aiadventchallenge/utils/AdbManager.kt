@@ -290,6 +290,45 @@ class AdbManager {
     }
     
     /**
+     * Очистка старых процессов эмулятора перед запуском
+     */
+    private fun cleanupEmulatorProcesses() {
+        logger.info("🧹 Cleaning up old emulator processes...")
+        
+        try {
+            if (adbPath != null) {
+                // Пытаемся корректно завершить эмулятор через adb
+                val killResult = executeCommandSimple(listOf(adbPath, "emu", "kill"))
+                if (killResult.success) {
+                    logger.info("✅ Emulator stopped via adb")
+                }
+                
+                // Перезапускаем ADB сервер для очистки
+                executeCommandSimple(listOf(adbPath, "kill-server"))
+                Thread.sleep(500)
+                executeCommandSimple(listOf(adbPath, "start-server"))
+            }
+            
+            // Убиваем процессы эмулятора принудительно (для Windows)
+            if (isWindows) {
+                executeCommandSimple(listOf("taskkill", "/F", "/IM", "emulator.exe", "/T"))
+                executeCommandSimple(listOf("taskkill", "/F", "/IM", "qemu-system-x86_64.exe", "/T"))
+            } else {
+                // Для Unix-подобных систем
+                executeCommandSimple(listOf("pkill", "-f", "emulator"))
+                executeCommandSimple(listOf("pkill", "-f", "qemu-system"))
+            }
+            
+            // Даем время на очистку
+            Thread.sleep(1000)
+            logger.info("✅ Cleanup completed")
+        } catch (e: Exception) {
+            logger.warn("⚠️ Cleanup warning: ${e.message}")
+            // Не критично, продолжаем
+        }
+    }
+    
+    /**
      * Запуск эмулятора
      */
     fun startEmulator(avdName: String): CommandResult {
@@ -300,6 +339,9 @@ class AdbManager {
                 error = "Emulator not found. Please install Android SDK."
             )
         }
+        
+        // Очистка перед запуском
+        cleanupEmulatorProcesses()
         
         logger.info("🚀 Starting emulator: $avdName")
         
