@@ -264,16 +264,39 @@ class YandexAIAgent(
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        // Надежный способ извлечения JSON: ищем первую { и последнюю }
-        val jsonStartIndex = response.indexOf('{')
-        val jsonEndIndex = response.lastIndexOf('}')
-
-        // Если скобок нет или порядок нарушен — считаем это просто текстом
-        if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonEndIndex <= jsonStartIndex) {
+        // Удаляем markdown блоки, если есть
+        val cleanedResponse = response
+            .replace("```json", "")
+            .replace("```", "")
+            .trim()
+        
+        // Надежное извлечение JSON с учетом вложенности скобок
+        val jsonStartIndex = cleanedResponse.indexOf('{')
+        if (jsonStartIndex == -1) {
+            return emptyList()
+        }
+        
+        // Подсчитываем вложенность скобок, чтобы найти закрывающую
+        var depth = 0
+        var jsonEndIndex = -1
+        for (i in jsonStartIndex until cleanedResponse.length) {
+            when (cleanedResponse[i]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) {
+                        jsonEndIndex = i
+                        break
+                    }
+                }
+            }
+        }
+        
+        if (jsonEndIndex == -1) {
             return emptyList()
         }
 
-        val jsonString = response.substring(jsonStartIndex, jsonEndIndex + 1)
+        val jsonString = cleanedResponse.substring(jsonStartIndex, jsonEndIndex + 1)
 
         return try {
             val root = json.parseToJsonElement(jsonString).jsonObject
