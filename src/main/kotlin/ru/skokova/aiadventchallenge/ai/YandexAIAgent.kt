@@ -30,6 +30,7 @@ class YandexAIAgent(
     private val cryptoCurrencyMcpServer: CryptoCurrencyMCPServer,
     private val summarizationMcpServer: SummarizationMCPServer,
     private val filesystemClient: FilesystemMCPClient,
+    private val androidEnvironmentMcpServer: AndroidEnvironmentMCPServer,
     private val yandexGPTClient: YandexGPTClient
 ) {
     private val logger = LoggerFactory.getLogger(YandexAIAgent::class.java)
@@ -55,6 +56,7 @@ class YandexAIAgent(
         val cNames = cryptoCurrencyMcpServer.getToolsList().map { it.name }.toSet()
         val sNames = summarizationMcpServer.getToolsList().map { it.name }.toSet()
         val fNames = filesystemClient.listTools().map { it.name }.toSet()
+        val aNames = androidEnvironmentMcpServer.getToolsList().map { it.name }.toSet()
 
         var currentContext = command
         var iterationCount = 0
@@ -73,14 +75,13 @@ class YandexAIAgent(
             }
 
             val response = yandexGPTClient.chat(systemPrompt, contextMessage)
-            logger.info("📝 LLM Response: ${response.take(300)}...")
+            logger.info("📋 LLM Response: ${response.take(300)}...")
 
             val toolCalls = parseToolCalls(response)
 
             // Если инструментов нет, значит LLM вернула финальный текстовый ответ
             if (toolCalls.isEmpty()) {
                 logger.info("✅ LLM вернула финальный ответ")
-                // Возвращаем ответ как есть, не пытаясь вырезать markdown, чтобы не сломать форматирование
                 return AgentResponse(response, executedCalls, rawResults)
             }
 
@@ -93,6 +94,7 @@ class YandexAIAgent(
                         in cNames -> cryptoCurrencyMcpServer.executeTool(call.toolName, call.parameters)
                         in sNames -> summarizationMcpServer.executeTool(call.toolName, call.parameters)
                         in fNames -> filesystemClient.callTool(call.toolName, call.parameters)
+                        in aNames -> androidEnvironmentMcpServer.executeTool(call.toolName, call.parameters)
                         else -> "Error: Tool not found '${call.toolName}'"
                     }
                 } catch (e: Exception) {
@@ -133,6 +135,11 @@ class YandexAIAgent(
         if (lastResult.toolName == "write_file" && !lastResult.result.startsWith("Error")) {
             return "STOP_SUCCESS"
         }
+        
+        // Условие раннего выхода: если приложение успешно запущено
+        if (lastResult.toolName == "start_app" && lastResult.result.contains("success")) {
+            return "STOP_SUCCESS"
+        }
 
         val history = previousResults.joinToString("\n") { "✔ ${it.toolName}: Выполнено" }
 
@@ -155,6 +162,13 @@ class YandexAIAgent(
                Скопируй ВЕСЬ текст из результата выше в параметр "content".
                В параметр "path" укажи имя файла (обязательно добавь префикс "mcp-output/").
             
+            3. Для Android-инструментов (запуск эмулятора, установка APK):
+               - Сначала check_adb
+               - Затем start_emulator (если нужно)
+               - wait_for_device для ожидания загрузки
+               - install_apk для установки
+               - start_app для запуска
+            
             ВЕРНИ ТОЛЬКО JSON с инструментом.
         """.trimIndent()
     }
@@ -163,7 +177,8 @@ class YandexAIAgent(
         val allTools = reminderMcpServer.getToolsList() +
                 cryptoCurrencyMcpServer.getToolsList() +
                 summarizationMcpServer.getToolsList() +
-                filesystemClient.listTools()
+                filesystemClient.listTools() +
+                androidEnvironmentMcpServer.getToolsList()
 
         return """
             Ты AI-агент. Твоя задача - выполнять цепочку действий для решения задачи пользователя.
@@ -176,6 +191,7 @@ class YandexAIAgent(
             2. Формат ответа - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
             3. НЕ используй Markdown блоки (```
             4. При записи файлов всегда используй папку "mcp-output/".
+            5. Для Android-задач следуй последовательности: check_adb -> start_emulator -> wait_for_device -> install_apk -> start_app
         """.trimIndent()
     }
 
