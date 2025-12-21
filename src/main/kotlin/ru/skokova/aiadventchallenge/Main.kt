@@ -6,6 +6,8 @@ import ru.skokova.aiadventchallenge.ai.YandexGPTClient
 import ru.skokova.aiadventchallenge.coincap.CoinCapClient
 import ru.skokova.aiadventchallenge.mcp.*
 import ru.skokova.aiadventchallenge.storage.ReminderStorage
+import ru.skokova.aiadventchallenge.utils.AdbManager
+import ru.skokova.aiadventchallenge.utils.AndroidConfig
 import ru.skokova.aiadventchallenge.utils.loadProperties
 import java.io.File
 import java.util.Properties
@@ -15,31 +17,52 @@ fun main() = runBlocking {
     // 0. Загружаем local.properties (если есть)
     val properties = loadProperties()
 
-    // 1. Загрузка конфигурации (через правильный helper)
-    // Для COINCAP_API_KEY используем try/catch или отдельную логику,
-    // если он опциональный, но по твоей логике getEnvOrProperty кидает exception.
-    // Если он обязателен - вызываем так же. Если нет - обрабатываем исключение.
+    // 1. Загрузка конфигурации
     val yandexKey = getEnvOrProperty("YANDEX_API_KEY", properties)
     val folderId = getEnvOrProperty("YANDEX_FOLDER_ID", properties)
 
     val coinCapKey = try {
         getEnvOrProperty("COINCAP_API_KEY", properties)
     } catch (e: Exception) {
-        null // Если ключа нет, продолжаем без него (или падает, если критично)
+        null
     }
 
-    // 2. Инициализация
+    // 2. Инициализация клиентов и хранилищ
     val coinCapClient = CoinCapClient(apiKey = coinCapKey)
     val storage = ReminderStorage(File("reminders.json"))
     val yandexGPTClient = YandexGPTClient(yandexKey, folderId)
 
-    // 3. Серверы
+    // 3. Инициализация MCP серверов
     val reminderServer = ReminderMCPServer(storage)
     val cryptoServer = CryptoCurrencyMCPServer(coinCapClient)
     val summarizationServer = SummarizationMCPServer()
     val filesystemClient = FilesystemMCPClient()
+    
+    // 4. Day 15: Android Environment MCP Server
+    val adbManager = AdbManager()
+    val androidEnvServer = AndroidEnvironmentMCPServer(adbManager)
+    
+    // 5. Интерактивный сбор конфигурации для Android
+    println("\n" + "=".repeat(60))
+    println("🤖 Day 15: Android Environment Setup")
+    println("=".repeat(60))
+    println()
+    println("📱 Этот режим позволяет автоматизировать работу с Android эмулятором.")
+    println("Вы можете запускать эмуляторы, устанавливать и тестировать APK.")
+    println()
+    print("❓ Хотите настроить Android окружение? (y/n): ")
+    
+    val scanner = Scanner(System.`in`)
+    val setupAndroid = scanner.nextLine().trim().lowercase() in listOf("y", "yes", "д", "да")
+    
+    val androidConfig = if (setupAndroid) {
+        collectAndroidConfig(scanner)
+    } else {
+        println("✅ Android окружение не настроено. Вы можете сделать это позже.")
+        null
+    }
 
-    // 4. Агент
+    // 6. Агент с поддержкой всех серверов
     val agent = YandexAIAgent(
         apiKey = yandexKey,
         folderId = folderId,
@@ -47,11 +70,26 @@ fun main() = runBlocking {
         cryptoCurrencyMcpServer = cryptoServer,
         summarizationMcpServer = summarizationServer,
         filesystemClient = filesystemClient,
+        androidEnvironmentMcpServer = androidEnvServer,
         yandexGPTClient = yandexGPTClient
     )
 
-    println("🚀 AI Agent ready! (CoinCap Key: ${if (coinCapKey != null) "Yes" else "No"})")
-    val scanner = Scanner(System.`in`)
+    // 7. Интерактивный режим
+    println("\n" + "=".repeat(60))
+    println("🚀 AI Agent ready!")
+    println("=".repeat(60))
+    println("CoinCap API: ${if (coinCapKey != null) "✅ Connected" else "❌ Not configured"}")
+    println("Android Environment: ${if (setupAndroid) "✅ Configured" else "❌ Not configured"}")
+    if (androidConfig != null) {
+        println("\n📱 Android Config:")
+        println("  APK: ${androidConfig.apkPath}")
+        println("  Package: ${androidConfig.packageName}")
+        println("  Activity: ${androidConfig.activityName}")
+        println("  AVD: ${androidConfig.avdName}")
+    }
+    println("\n💬 Type 'exit' to quit")
+    println("=".repeat(60))
+    
     while (true) {
         print("\n> ")
         if (!scanner.hasNextLine()) break
@@ -67,7 +105,41 @@ fun main() = runBlocking {
     filesystemClient.shutdown()
 }
 
-// Твой правильный метод (добавлен прямо сюда для надежности)
+/**
+ * Интерактивный сбор конфигурации для Android окружения
+ */
+fun collectAndroidConfig(scanner: Scanner): AndroidConfig {
+    println()
+    println("🔧 Настройка Android Environment")
+    println("-".repeat(60))
+    
+    print("\n📱 Введите путь к APK файлу: ")
+    val apkPath = scanner.nextLine().trim()
+    
+    print("📦 Введите package name (например, com.example.app): ")
+    val packageName = scanner.nextLine().trim()
+    
+    print("🎯 Введите main activity (например, .MainActivity): ")
+    val activityName = scanner.nextLine().trim()
+    
+    print("📲 Введите имя AVD (например, Pixel_5_API_34): ")
+    val avdName = scanner.nextLine().trim()
+    
+    println()
+    println("✅ Конфигурация сохранена!")
+    println("-".repeat(60))
+    
+    return AndroidConfig(
+        apkPath = apkPath,
+        packageName = packageName,
+        activityName = activityName,
+        avdName = avdName
+    )
+}
+
+/**
+ * Получение значения из ENV или properties файла
+ */
 fun getEnvOrProperty(key: String, properties: Properties?): String {
     // 1. Ищем в ENV (приоритет)
     val envValue = System.getenv(key)
