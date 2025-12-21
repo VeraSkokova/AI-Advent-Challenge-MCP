@@ -14,6 +14,17 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     
     /**
+     * Проверка что значение недействительно или placeholder
+     */
+    private fun isInvalidOrPlaceholder(value: String?): Boolean {
+        return value == null || 
+               value.isEmpty() || 
+               value == "null" || 
+               value.contains("your.package") || 
+               value.contains("your.activity")
+    }
+    
+    /**
      * Список доступных инструментов
      */
     fun getToolsList(): List<ToolInfo> = listOf(
@@ -242,26 +253,32 @@ class AndroidEnvironmentMCPServer(private val adbManager: AdbManager) {
         var packageName = params["packageName"]?.toString()
         var activityName = params["activityName"]?.toString()
         
-        // Если packageName не указан или placeholder, используем инфо из последнего установленного APK
-        if (packageName == null || packageName.contains("your.package") || packageName.isEmpty()) {
+        // Если packageName не указан или placeholder/null, используем инфо из последнего установленного APK
+        if (isInvalidOrPlaceholder(packageName)) {
             val apkInfo = adbManager.getLastInstalledApkInfo()
             if (apkInfo != null) {
                 logger.info("💾 Using last installed APK info: ${apkInfo.packageName}")
                 packageName = apkInfo.packageName
-                if (activityName == null || activityName.contains("your.activity") || activityName.isEmpty()) {
+                if (isInvalidOrPlaceholder(activityName)) {
                     activityName = apkInfo.launchActivity
                 }
             } else {
-                return buildJsonError("Missing required parameter: packageName (and no previously installed APK info found)")
+                return buildJsonError(
+                    "Missing required parameter: packageName",
+                    mapOf("hint" to "No previously installed APK info found. Install an APK first or provide packageName explicitly.")
+                )
             }
         }
         
-        if (activityName == null || activityName.isEmpty()) {
-            return buildJsonError("Missing required parameter: activityName")
+        if (isInvalidOrPlaceholder(activityName)) {
+            return buildJsonError(
+                "Missing required parameter: activityName",
+                mapOf("hint" to "Could not determine activity name. Please provide it explicitly.")
+            )
         }
         
         logger.info("🚀 Starting app: $packageName/$activityName")
-        val result = adbManager.startApp(packageName, activityName)
+        val result = adbManager.startApp(packageName!!, activityName!!)
         
         return if (result.success) {
             buildJsonSuccess(mapOf(
