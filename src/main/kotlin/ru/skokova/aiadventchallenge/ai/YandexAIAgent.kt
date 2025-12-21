@@ -106,6 +106,7 @@ class YandexAIAgent(
             logger.info("📋 LLM Response: ${response.take(300)}...")
 
             val toolCalls = parseToolCalls(response)
+            logger.info("🔍 Parsed ${toolCalls.size} tool calls")
 
             // Если инструментов нет, значит LLM вернула финальный текстовый ответ
             if (toolCalls.isEmpty()) {
@@ -270,9 +271,12 @@ class YandexAIAgent(
             .replace("```", "")
             .trim()
         
+        logger.debug("🧼 Cleaned response: $cleanedResponse")
+        
         // Надежное извлечение JSON с учетом вложенности скобок
         val jsonStartIndex = cleanedResponse.indexOf('{')
         if (jsonStartIndex == -1) {
+            logger.warn("⚠️ No '{' found in response")
             return emptyList()
         }
         
@@ -293,16 +297,21 @@ class YandexAIAgent(
         }
         
         if (jsonEndIndex == -1) {
+            logger.warn("⚠️ No matching '}' found in response")
             return emptyList()
         }
 
         val jsonString = cleanedResponse.substring(jsonStartIndex, jsonEndIndex + 1)
+        logger.debug("📦 Extracted JSON: $jsonString")
 
         return try {
             val root = json.parseToJsonElement(jsonString).jsonObject
             val toolsArray = root["tools"]?.jsonArray
 
-            if (toolsArray.isNullOrEmpty()) return emptyList()
+            if (toolsArray.isNullOrEmpty()) {
+                logger.warn("⚠️ No tools array found or empty")
+                return emptyList()
+            }
 
             toolsArray.mapNotNull { toolElement ->
                 if (toolElement !is JsonObject) return@mapNotNull null
