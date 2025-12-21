@@ -67,7 +67,13 @@ class YandexAIAgent(
         
         // Определяем, является ли запрос действием или информационным
         val isActionQuery = actionKeywords.any { command.lowercase().contains(it) }
-        logger.debug("Query type: ${if (isActionQuery) "ACTION" else "INFORMATIONAL"}")
+        
+        // Проверяем, упоминается ли в запросе APK или приложение
+        val mentionsApk = command.lowercase().contains("apk") || 
+                         command.lowercase().contains("прилож") ||
+                         command.lowercase().contains("установ")
+        
+        logger.debug("Query type: ${if (isActionQuery) "ACTION" else "INFORMATIONAL"}, mentions APK: $mentionsApk")
 
         val systemPrompt = buildSystemPrompt()
         val executedCalls = mutableListOf<ToolCall>()
@@ -88,12 +94,12 @@ class YandexAIAgent(
             iterationCount++
             logger.info("📍 Iteration $iterationCount")
 
-            val contextMessage = buildContextMessage(command, currentContext, executedCalls)
+            val contextMessage = buildContextMessage(command, currentContext, executedCalls, mentionsApk)
 
             // Если buildContextMessage вернул спец-сигнал об успехе, завершаем работу
             if (contextMessage == "STOP_SUCCESS") {
                 logger.info("✅ Pipeline finished successfully via context check")
-                return AgentResponse("Готово! Файл успешно сохранен в папку mcp-output.", executedCalls, rawResults)
+                return AgentResponse("Готово! Эмулятор запущен.", executedCalls, rawResults)
             }
 
             val response = yandexGPTClient.chat(systemPrompt, contextMessage)
@@ -132,13 +138,24 @@ class YandexAIAgent(
                 currentContext = result
                 
                 // Ранний выход ТОЛЬКО для чисто информационных запросов
-                // Не срабатывает, если это промежуточный шаг в цепочке действий
                 if (!isActionQuery && 
                     call.toolName in purelyInformationalTools && 
                     result.contains("\"status\": \"success\"")) {
                     logger.info("✅ Informational tool '${call.toolName}' completed successfully. Stopping pipeline.")
                     return AgentResponse(
                         "Запрос выполнен успешно. Результат:\n$result",
+                        executedCalls,
+                        rawResults
+                    )
+                }
+                
+                // Ранний выход после успешного запуска эмулятора, если APK не упоминается
+                if (!mentionsApk && 
+                    call.toolName == "start_emulator" && 
+                    result.contains("\"status\": \"success\"")) {
+                    logger.info("✅ Emulator started successfully and no APK mentioned. Stopping pipeline.")
+                    return AgentResponse(
+                        "Эмулятор успешно запущен!\n\nПримечание: Эмулятор загружается в фоне. Это может занять 2-3 минуты. Проверьте список устройств позже.",
                         executedCalls,
                         rawResults
                     )
@@ -153,7 +170,12 @@ class YandexAIAgent(
         )
     }
 
-    private fun buildContextMessage(originalCommand: String, currentContext: String, previousResults: List<ToolCall>): String {
+    private fun buildContextMessage(
+        originalCommand: String, 
+        currentContext: String, 
+        previousResults: List<ToolCall>,
+        mentionsApk: Boolean
+    ): String {
         if (previousResults.isEmpty()) {
             return """
             ЗАДАЧА ПОЛЬЗОВАТЕЛЯ: "$originalCommand"
@@ -170,13 +192,18 @@ class YandexAIAgent(
 
         val lastResult = previousResults.last()
 
-        // Условие раннего выхода: если файл успешно записан, останавливаемся
+        // Условие раннего выхода: если файл успешно записан
         if (lastResult.toolName == "write_file" && !lastResult.result.startsWith("Error")) {
             return "STOP_SUCCESS"
         }
         
         // Условие раннего выхода: если приложение успешно запущено
         if (lastResult.toolName == "start_app" && lastResult.result.contains("success")) {
+            return "STOP_SUCCESS"
+        }
+        
+        // Условие раннего выхода: эмулятор запущен и APK не упоминается
+        if (!mentionsApk && lastResult.toolName == "start_emulator" && lastResult.result.contains("success")) {
             return "STOP_SUCCESS"
         }
 
@@ -194,15 +221,15 @@ class YandexAIAgent(
             ТВОЯ ЦЕЛЬ: Вызвать следующий инструмент.
             
             ВАЖНЫЕ ПРАВИЛА:
-            1. ВСЕГДА извлекай параметры из ИСХОДНОЙ ЗАДАЧИ пользователя.
-               Пример: если задача "Запусти эмулятор Pixel_5", то для start_emulator используй {"avdName": "Pixel_5"}.
+            1. ВСЕГДА извлекай параметры из ИСХОДНОЙ ЗАДАЧИ.
+               Пример: если задача "Запусти эмулятор Pixel_5", то {"avdName": "Pixel_5"}.
             
-            2. Если последний инструмент вернул ошибку "Missing required parameter", 
-               значит ты забыл извлечь параметр из исходной задачи!
+            2. Если последний инструмент вернул ошибку "Missing required parameter" или "Timeout",
+               НЕ продолжай! Верни текстовый ответ об ошибке.
             
             3. Для crypto -> summarize -> write_file: копируй данные между шагами.
             
-            4. Для Android: check_adb -> start_emulator (с avdName!) -> wait_for_device -> install_apk -> start_app
+            4. Для Android: start_emulator -> (остановись если нет APK в задаче)
             
             ВЕРНИ ТОЛЬКО JSON с инструментом и параметрами.
         """.trimIndent()
@@ -231,7 +258,7 @@ class YandexAIAgent(
             1. ВСЕГДА извлекай параметры из текста задачи пользователя!
             2. Формат ответа - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
             3. НЕ используй Markdown блоки (```)
-            4. Для Android-задач следуй последовательности: check_adb -> start_emulator -> wait_for_device -> install_apk -> start_app
+            4. Если инструмент вернул ошибку, НЕ продолжай вызывать другие инструменты. Верни пустой JSON {"tools": []}.
             5. При записи файлов используй папку "mcp-output/".
         """.trimIndent()
     }
