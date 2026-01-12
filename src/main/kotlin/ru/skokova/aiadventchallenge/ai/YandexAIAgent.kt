@@ -42,9 +42,9 @@ class YandexAIAgent(
         prettyPrint = false
         coerceInputValues = true
     }
-    
+
     // Tools that are purely informational but we WANT the LLM to process their output
-    // instead of returning raw JSON/logs directly to the user.
+    // instead of returning raw tool output directly to the user.
     private val purelyInformationalTools = setOf(
         "list_devices",
         "check_adb",
@@ -57,7 +57,7 @@ class YandexAIAgent(
         "git_diff_list",
         "git_current_branch"
     )
-    
+
     private val actionKeywords = setOf(
         "запусти", "запуск", "start",
         "установи", "install",
@@ -68,11 +68,11 @@ class YandexAIAgent(
 
     suspend fun executeCommand(command: String): AgentResponse {
         logger.info("🤖 Processing command: $command")
-        
+
         val isActionQuery = actionKeywords.any { command.lowercase().contains(it) }
-        val mentionsApk = command.lowercase().contains("apk") || 
-                         command.lowercase().contains("прилож") ||
-                         command.lowercase().contains("установ")
+        val mentionsApk = command.lowercase().contains("apk") ||
+            command.lowercase().contains("прилож") ||
+            command.lowercase().contains("установ")
 
         val systemPrompt = buildSystemPrompt()
         val executedCalls = mutableListOf<ToolCall>()
@@ -135,22 +135,15 @@ class YandexAIAgent(
                 executedCalls.add(toolCallWithResult)
                 rawResults[call.toolName] = result
                 currentContext = result
-                
-                // --- ИЗМЕНЕНИЕ ЛОГИКИ ---
-                // Раньше мы сразу возвращали результат, если это informational tool.
-                // Теперь мы позволяем циклу продолжиться, чтобы LLM могла получить этот результат
-                // и сформировать финальный ответ на следующей итерации.
-                // Исключение: если произошла ошибка, лучше остановиться.
-                
-                if (!isActionQuery && 
-                    call.toolName in purelyInformationalTools && 
-                    result.startsWith("Error")) {
-                     return AgentResponse("Произошла ошибка при получении информации: $result", executedCalls, rawResults)
+
+                // Не прерываем пайплайн для informational tools: даем LLM шанс обработать вывод на следующей итерации.
+                if (!isActionQuery && call.toolName in purelyInformationalTools && result.startsWith("Error")) {
+                    return AgentResponse("Произошла ошибка при получении информации: $result", executedCalls, rawResults)
                 }
-                
-                // Ранний выход для Android сценариев оставляем, так как там важен факт запуска, а не текст
-                if (!mentionsApk && 
-                    call.toolName == "start_emulator" && 
+
+                // Ранний выход для Android сценариев оставляем
+                if (!mentionsApk &&
+                    call.toolName == "start_emulator" &&
                     result.contains("\"status\": \"success\"")) {
                     logger.info("✅ Emulator started successfully and no APK mentioned. Stopping pipeline.")
                     return AgentResponse(
@@ -170,11 +163,10 @@ class YandexAIAgent(
             rawResults
         )
     }
-    
-    // ... (остальные методы без изменений)
+
     private fun buildContextMessage(
-        originalCommand: String, 
-        currentContext: String, 
+        originalCommand: String,
+        currentContext: String,
         previousResults: List<ToolCall>,
         mentionsApk: Boolean
     ): String {
@@ -183,14 +175,16 @@ class YandexAIAgent(
             ЗАДАЧА ПОЛЬЗОВАТЕЛЯ: "$originalCommand"
             
             ВАЖНО: Извлекай параметры из текста задачи!
+            Формат ответа СТРОГО JSON: {"tools": [{"name": "...", "params": {...}}]}
+            
             Примеры:
-            - "Запусти эмулятор Pixel_5" -> {"name": "start_emulator", "params": {"avdName": "Pixel_5"}}
-            - "Установи APK из /path/app.apk" -> {"name": "install_apk", "params": {"apkPath": "/path/app.apk", "reinstall": true}}
-            - "/help" (без аргументов) -> {"name": "help_overview", "params": {}}
-            - "/help как добавить MCP tool" -> {"name": "ask_project_docs", "params": {"query": "как добавить MCP tool"}}
+            - "Запусти эмулятор Pixel_5" -> {"tools": [{"name": "start_emulator", "params": {"avdName": "Pixel_5"}}]}
+            - "Установи APK из /path/app.apk" -> {"tools": [{"name": "install_apk", "params": {"apkPath": "/path/app.apk", "reinstall": true}}]}
+            - "/help" (без аргументов) -> {"tools": [{"name": "help_overview", "params": {}}]}
+            - "/help как добавить MCP tool" -> {"tools": [{"name": "ask_project_docs", "params": {"query": "как добавить MCP tool"}}]}
             
             ТВОЯ ЦЕЛЬ: Определить первый шаг.
-            ВЕРНИ JSON с одним инструментом.
+            ВЕРНИ ТОЛЬКО JSON (без ``` и без пояснений).
             """.trimIndent()
         }
 
@@ -199,11 +193,11 @@ class YandexAIAgent(
         if (lastResult.toolName == "write_file" && !lastResult.result.startsWith("Error")) {
             return "STOP_SUCCESS"
         }
-        
+
         if (lastResult.toolName == "start_app" && lastResult.result.contains("success")) {
             return "STOP_SUCCESS"
         }
-        
+
         if (!mentionsApk && lastResult.toolName == "start_emulator" && lastResult.result.contains("success")) {
             return "STOP_SUCCESS"
         }
@@ -220,24 +214,16 @@ class YandexAIAgent(
             ${lastResult.result}
             
             ТВОЯ ЦЕЛЬ:
-            1. Если получен ответ от ask_project_docs/help_overview/list_... -> СФОРМУЛИРУЙ финальный ответ пользователю на основе этих данных. Не используй JSON, просто верни текст.
-            2. Если нужно продолжить цепочку (например, после git_status нужен git_diff) -> верни JSON с следующим инструментом.
+            1. Если последний инструмент вернул контекст (например ask_project_docs/help_overview/git_status) -> СФОРМУЛИРУЙ финальный ответ пользователю на основе этих данных.
+               - Ответ должен быть обычным текстом (НЕ JSON).
+               - Укажи источники: перечисли файлы (sourceFile) из найденных чанков.
+            2. Если нужно продолжить цепочку -> верни JSON строго в формате {"tools": [{"name": "...", "params": {...}}]}.
             
-            ВАЖНЫЕ ПРАВИЛА:
-            1. ВСЕГДА извлекай параметры из ИСХОДНОЙ ЗАДАЧИ.
-            2. Если последний инструмент вернул ошибку, НЕ продолжай!
-            3. Для crypto -> summarize -> write_file: копируй данные между шагами.
-            4. Для Android: start_emulator -> wait_for_device -> install_apk -> start_app
-            5. ДЛЯ wait_for_device: НЕ указывай timeout (дефолт 300с достаточно).
-            6. install_apk ВСЕГДА с reinstall: true.
-            7. Для start_app: СТРОГО ПЕРЕДАВАЙ ПУСТЫЕ ПАРАМЕТРЫ {}. НЕ указывай packageName/activityName - система сама возьмет их из установленного APK.
-            
-            ЕСЛИ ГОТОВ ОТВЕТИТЬ ПОЛЬЗОВАТЕЛЮ - пиши текст ответа (без JSON).
+            ЕСЛИ ГОТОВ ОТВЕТИТЬ ПОЛЬЗОВАТЕЛЮ - пиши текст ответа.
             ЕСЛИ НУЖЕН ИНСТРУМЕНТ - пиши JSON.
         """.trimIndent()
     }
-    
-    // ... parseToolCalls и buildSystemPrompt остаются теми же, они не менялись в этом блоке
+
     private suspend fun buildSystemPrompt(): String {
         val allTools = mutableListOf<ToolInfo>()
         allTools.addAll(reminderMcpServer.getToolsList())
@@ -260,7 +246,7 @@ class YandexAIAgent(
             
             ПРАВИЛА:
             1. ВСЕГДА извлекай параметры из текста задачи пользователя!
-            2. Формат ответа - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
+            2. Формат ответа для вызова инструмента - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
             3. НЕ используй Markdown блоки (```)
             4. Если инструмент вернул ошибку, НЕ продолжай!
             5. При записи файлов используй папку "mcp-output/".
@@ -268,7 +254,10 @@ class YandexAIAgent(
             КОМАНДА /help:
             - Если пользователь пишет просто "/help" без аргументов -> вызови "help_overview" (без параметров)
             - Если пользователь пишет "/help <вопрос>" -> вызови "ask_project_docs" с параметром query=<вопрос>
-            - Для вопросов о текущих изменениях/ветке можно дополнительно использовать git_status/git_diff_list
+            
+            ВАЖНО (RAG):
+            - Инструмент ask_project_docs возвращает найденные чанки кода/доков.
+            - После получения чанков СФОРМУЛИРУЙ человеческий ответ и обязательно укажи источники (список файлов), которые использовались.
             
             ANDROID РАБОЧИЙ ПРОЦЕСС:
             1. start_emulator -> запускает эмулятор
@@ -279,50 +268,79 @@ class YandexAIAgent(
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        val jsonStartIndex = response.indexOf('{')
-        val jsonEndIndex = response.lastIndexOf('}')
+        // Поддерживаем оба формата, потому что LLM иногда присылает:
+        // 1) {"tools": [{...}]}
+        // 2) {"name": "tool", "params": {...}}
+        // и иногда оборачивает это в ```...
 
-        if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonEndIndex <= jsonStartIndex) {
-            return emptyList()
+        val objStart = response.indexOf('{')
+        val arrStart = response.indexOf('[')
+
+        val startIndex = when {
+            objStart == -1 && arrStart == -1 -> return emptyList()
+            objStart == -1 -> arrStart
+            arrStart == -1 -> objStart
+            else -> minOf(objStart, arrStart)
         }
 
-        val jsonString = response.substring(jsonStartIndex, jsonEndIndex + 1)
+        val jsonString = when (response[startIndex]) {
+            '{' -> {
+                val end = response.lastIndexOf('}')
+                if (end <= startIndex) return emptyList()
+                response.substring(startIndex, end + 1)
+            }
+            '[' -> {
+                val end = response.lastIndexOf(']')
+                if (end <= startIndex) return emptyList()
+                response.substring(startIndex, end + 1)
+            }
+            else -> return emptyList()
+        }
 
         return try {
-            val root = json.parseToJsonElement(jsonString).jsonObject
-            val toolsArray = root["tools"]?.jsonArray
-
-            if (toolsArray.isNullOrEmpty()) return emptyList()
-
-            toolsArray.mapNotNull { toolElement ->
-                if (toolElement !is JsonObject) return@mapNotNull null
-
-                val name = toolElement["name"]?.jsonPrimitive?.content ?: "unknown"
-                val paramsElement = toolElement["params"]
-
-                val cleanParams: Map<String, Any> = when (paramsElement) {
-                    is JsonObject -> paramsElement.mapValues { (_, value) ->
-                        when (value) {
-                            is JsonPrimitive -> if (value.isString) value.content else value.toString()
-                            is JsonObject -> value.toString()
-                            is JsonArray -> {
-                                if (value.all { it is JsonPrimitive && it.isString }) {
-                                    value.map { (it as JsonPrimitive).content }
-                                } else {
-                                    value.toString()
-                                }
-                            }
-                            else -> value.toString()
-                        }
+            val element = json.parseToJsonElement(jsonString)
+            when (element) {
+                is JsonObject -> {
+                    val toolsArray = element["tools"]?.jsonArray
+                    when {
+                        !toolsArray.isNullOrEmpty() -> toolsArray.mapNotNull { parseSingleToolObject(it) }
+                        element["name"] != null -> listOfNotNull(parseSingleToolObject(element))
+                        else -> emptyList()
                     }
-                    else -> emptyMap()
                 }
-
-                ToolCall(name, cleanParams, "")
+                is JsonArray -> element.mapNotNull { parseSingleToolObject(it) }
+                else -> emptyList()
             }
         } catch (e: Exception) {
             logger.error("❌ Failed to parse JSON: $jsonString. Error: ${e.message}")
             emptyList()
         }
+    }
+
+    private fun parseSingleToolObject(toolElement: JsonElement): ToolCall? {
+        if (toolElement !is JsonObject) return null
+
+        val name = toolElement["name"]?.jsonPrimitive?.content ?: return null
+        val paramsElement = toolElement["params"]
+
+        val cleanParams: Map<String, Any> = when (paramsElement) {
+            is JsonObject -> paramsElement.mapValues { (_, value) ->
+                when (value) {
+                    is JsonPrimitive -> if (value.isString) value.content else value.toString()
+                    is JsonObject -> value.toString()
+                    is JsonArray -> {
+                        if (value.all { it is JsonPrimitive && it.isString }) {
+                            value.map { (it as JsonPrimitive).content }
+                        } else {
+                            value.toString()
+                        }
+                    }
+                    else -> value.toString()
+                }
+            }
+            else -> emptyMap()
+        }
+
+        return ToolCall(name, cleanParams, "")
     }
 }
