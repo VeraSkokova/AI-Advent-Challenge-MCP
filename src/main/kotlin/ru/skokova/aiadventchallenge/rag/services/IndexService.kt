@@ -17,20 +17,23 @@ class IndexService(
     private val json = Json { prettyPrint = true }
 
     suspend fun createIndex(folderPath: String): VectorIndex {
-        val folder = File(folderPath)
+        // Используем canonicalFile, чтобы разрешить относительные пути типа "." в реальные имена папок
+        val folder = File(folderPath).canonicalFile
         if (!folder.exists() || !folder.isDirectory) {
-            throw IllegalArgumentException("Папка не найдена: $folderPath")
+            throw IllegalArgumentException("Папка не найдена: $folderPath (resolved: ${folder.absolutePath})")
         }
 
         val files = folder.walkTopDown()
             .onEnter { file -> 
+                // Всегда заходим в корневую папку, даже если она начинается с точки (или является ".")
+                if (file.absolutePath == folder.absolutePath) return@onEnter true
+                
                 // Пропускаем скрытые папки (.git, .idea) и папки сборки (build, gradle)
                 !file.name.startsWith(".") && file.name != "build" && file.name != "gradle" 
             }
             .filter { file ->
                 if (!file.isFile) return@filter false
                 val ext = file.extension.lowercase()
-                // Теперь индексируем и Kotlin файлы
                 ext == "md" || ext == "txt" || ext == "kt"
             }
             .toList()
