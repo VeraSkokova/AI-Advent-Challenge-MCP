@@ -17,7 +17,6 @@ data class ToolCall(
     val result: String
 )
 
-// Wrapper классы оставлены для совместимости, но логика парсинга теперь работает напрямую с JsonElement
 @Serializable
 data class ToolCallsWrapper(val tools: List<ToolCallData> = emptyList())
 @Serializable
@@ -31,11 +30,11 @@ class YandexAIAgent(
     private val summarizationMcpServer: SummarizationMCPServer,
     private val filesystemClient: FilesystemMCPClient,
     private val androidEnvironmentMcpServer: AndroidEnvironmentMCPServer,
+    private val developerAssistantMcpServer: DeveloperAssistantMCPServer,
     private val yandexGPTClient: YandexGPTClient
 ) {
     private val logger = LoggerFactory.getLogger(YandexAIAgent::class.java)
 
-    // Максимально мягкая конфигурация JSON для парсинга ответов LLM
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -44,16 +43,19 @@ class YandexAIAgent(
         coerceInputValues = true
     }
     
-    // Список инструментов, которые являются чисто информационными (не меняют состояние системы)
     private val purelyInformationalTools = setOf(
         "list_devices",
         "check_adb",
         "get_logcat",
         "list_reminders",
-        "get_stats"
+        "get_stats",
+        "help_overview",
+        "ask_project_docs",
+        "git_status",
+        "git_diff_list",
+        "git_current_branch"
     )
     
-    // Список ключевых слов действий в запросах пользователя
     private val actionKeywords = setOf(
         "запусти", "запуск", "start",
         "установи", "install",
@@ -65,10 +67,7 @@ class YandexAIAgent(
     suspend fun executeCommand(command: String): AgentResponse {
         logger.info("🤖 Processing command: $command")
         
-        // Определяем, является ли запрос действием или информационным
         val isActionQuery = actionKeywords.any { command.lowercase().contains(it) }
-        
-        // Проверяем, упоминается ли в запросе APK или приложение
         val mentionsApk = command.lowercase().contains("apk") || 
                          command.lowercase().contains("прилож") ||
                          command.lowercase().contains("установ")
@@ -77,12 +76,12 @@ class YandexAIAgent(
         val executedCalls = mutableListOf<ToolCall>()
         val rawResults = mutableMapOf<String, Any>()
 
-        // Списки инструментов для маршрутизации
         val rNames = reminderMcpServer.getToolsList().map { it.name }.toSet()
         val cNames = cryptoCurrencyMcpServer.getToolsList().map { it.name }.toSet()
         val sNames = summarizationMcpServer.getToolsList().map { it.name }.toSet()
         val fNames = filesystemClient.listTools().map { it.name }.toSet()
         val aNames = androidEnvironmentMcpServer.getToolsList().map { it.name }.toSet()
+        val dNames = developerAssistantMcpServer.getToolsList().map { it.name }.toSet()
 
         var currentContext = command
         var iterationCount = 0
@@ -94,7 +93,6 @@ class YandexAIAgent(
 
             val contextMessage = buildContextMessage(command, currentContext, executedCalls, mentionsApk)
 
-            // Если buildContextMessage вернул спец-сигнал об успехе, завершаем работу
             if (contextMessage == "STOP_SUCCESS") {
                 logger.info("✅ Pipeline finished successfully via context check")
                 return AgentResponse("Готово! Эмулятор запущен.", executedCalls, rawResults)
@@ -105,7 +103,6 @@ class YandexAIAgent(
 
             val toolCalls = parseToolCalls(response)
 
-            // Если инструментов нет, значит LLM вернула финальный текстовый ответ
             if (toolCalls.isEmpty()) {
                 logger.info("✅ LLM вернула финальный ответ")
                 return AgentResponse(response, executedCalls, rawResults)
@@ -121,6 +118,7 @@ class YandexAIAgent(
                         in sNames -> summarizationMcpServer.executeTool(call.toolName, call.parameters)
                         in fNames -> filesystemClient.callTool(call.toolName, call.parameters)
                         in aNames -> androidEnvironmentMcpServer.executeTool(call.toolName, call.parameters)
+                        in dNames -> developerAssistantMcpServer.executeTool(call.toolName, call.parameters)
                         else -> "Error: Tool not found '${call.toolName}'"
                     }
                 } catch (e: Exception) {
@@ -135,25 +133,13 @@ class YandexAIAgent(
                 rawResults[call.toolName] = result
                 currentContext = result
                 
-                // Ранний выход ТОЛЬКО для чисто информационных запросов
                 if (!isActionQuery && 
                     call.toolName in purelyInformationalTools && 
-                    result.contains("\"status\": \"success\"")) {
+                    !result.startsWith("Error")) {
                     logger.info("✅ Informational tool '${call.toolName}' completed successfully. Stopping pipeline.")
-                    return AgentResponse(
-                        """
-                                  Эмулятор успешно запущен!
-        
-                                  Примечание: Эмулятор загружается в фоне. 
-                                  Это может занять 2-3 минуты. 
-                                  Проверьте список устройств позже.
-                                  """.trimIndent(),
-                        executedCalls,
-                        rawResults
-                    )
+                    return AgentResponse(result, executedCalls, rawResults)
                 }
                 
-                // Ранний выход после успешного запуска эмулятора, если APK не упоминается
                 if (!mentionsApk && 
                     call.toolName == "start_emulator" && 
                     result.contains("\"status\": \"success\"")) {
@@ -190,6 +176,8 @@ class YandexAIAgent(
             Примеры:
             - "Запусти эмулятор Pixel_5" -> {"name": "start_emulator", "params": {"avdName": "Pixel_5"}}
             - "Установи APK из /path/app.apk" -> {"name": "install_apk", "params": {"apkPath": "/path/app.apk", "reinstall": true}}
+            - "/help" (без аргументов) -> {"name": "help_overview", "params": {}}
+            - "/help как добавить MCP tool" -> {"name": "ask_project_docs", "params": {"query": "как добавить MCP tool"}}
             
             ТВОЯ ЦЕЛЬ: Определить первый шаг.
             ВЕРНИ JSON с одним инструментом.
@@ -198,17 +186,14 @@ class YandexAIAgent(
 
         val lastResult = previousResults.last()
 
-        // Условие раннего выхода: если файл успешно записан
         if (lastResult.toolName == "write_file" && !lastResult.result.startsWith("Error")) {
             return "STOP_SUCCESS"
         }
         
-        // Условие раннего выхода: если приложение успешно запущено
         if (lastResult.toolName == "start_app" && lastResult.result.contains("success")) {
             return "STOP_SUCCESS"
         }
         
-        // Условие раннего выхода: эмулятор запущен и APK не упоминается
         if (!mentionsApk && lastResult.toolName == "start_emulator" && lastResult.result.contains("success")) {
             return "STOP_SUCCESS"
         }
@@ -246,6 +231,7 @@ class YandexAIAgent(
         allTools.addAll(summarizationMcpServer.getToolsList())
         allTools.addAll(filesystemClient.listTools())
         allTools.addAll(androidEnvironmentMcpServer.getToolsList())
+        allTools.addAll(developerAssistantMcpServer.getToolsList())
 
         val toolsDescription = allTools.joinToString("\n") { tool ->
             val paramsDesc = if (tool.parameters.isEmpty()) "no params" else tool.parameters.joinToString(", ")
@@ -261,9 +247,14 @@ class YandexAIAgent(
             ПРАВИЛА:
             1. ВСЕГДА извлекай параметры из текста задачи пользователя!
             2. Формат ответа - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
-            3. НЕ используй Markdown блоки (```
+            3. НЕ используй Markdown блоки (```)
             4. Если инструмент вернул ошибку, НЕ продолжай!
             5. При записи файлов используй папку "mcp-output/".
+            
+            КОМАНДА /help:
+            - Если пользователь пишет просто "/help" без аргументов -> вызови "help_overview" (без параметров)
+            - Если пользователь пишет "/help <вопрос>" -> вызови "ask_project_docs" с параметром query=<вопрос>
+            - Для вопросов о текущих изменениях/ветке можно дополнительно использовать git_status/git_diff_list
             
             ANDROID РАБОЧИЙ ПРОЦЕСС:
             1. start_emulator -> запускает эмулятор
@@ -274,11 +265,9 @@ class YandexAIAgent(
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        // Надежный способ извлечения JSON: ищем первую { и последнюю }
         val jsonStartIndex = response.indexOf('{')
         val jsonEndIndex = response.lastIndexOf('}')
 
-        // Если скобок нет или порядок нарушен — считаем это просто текстом
         if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonEndIndex <= jsonStartIndex) {
             return emptyList()
         }
@@ -297,12 +286,10 @@ class YandexAIAgent(
                 val name = toolElement["name"]?.jsonPrimitive?.content ?: "unknown"
                 val paramsElement = toolElement["params"]
 
-                // Преобразуем параметры в Map<String, Any>, корректно обрабатывая вложенные JSON объекты
                 val cleanParams: Map<String, Any> = when (paramsElement) {
                     is JsonObject -> paramsElement.mapValues { (_, value) ->
                         when (value) {
                             is JsonPrimitive -> if (value.isString) value.content else value.toString()
-                            // Если параметр - это объект (например, data), превращаем его обратно в строку
                             is JsonObject -> value.toString()
                             is JsonArray -> {
                                 if (value.all { it is JsonPrimitive && it.isString }) {

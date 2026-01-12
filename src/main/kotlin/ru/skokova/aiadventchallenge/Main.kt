@@ -4,7 +4,12 @@ import kotlinx.coroutines.runBlocking
 import ru.skokova.aiadventchallenge.ai.YandexAIAgent
 import ru.skokova.aiadventchallenge.ai.YandexGPTClient
 import ru.skokova.aiadventchallenge.coincap.CoinCapClient
+import ru.skokova.aiadventchallenge.git.GitClient
 import ru.skokova.aiadventchallenge.mcp.*
+import ru.skokova.aiadventchallenge.rag.client.YandexEmbeddingClient
+import ru.skokova.aiadventchallenge.rag.services.IndexService
+import ru.skokova.aiadventchallenge.rag.services.SearchService
+import ru.skokova.aiadventchallenge.rag.services.TextChunker
 import ru.skokova.aiadventchallenge.storage.ReminderStorage
 import ru.skokova.aiadventchallenge.utils.AdbManager
 import ru.skokova.aiadventchallenge.utils.loadProperties
@@ -40,8 +45,21 @@ fun main() = runBlocking {
     // 4. Day 15: Android Environment MCP Server
     val adbManager = AdbManager()
     val androidEnvServer = AndroidEnvironmentMCPServer(adbManager)
+    
+    // 5. Day 20: Developer Assistant MCP Server (RAG + Git)
+    val yandexEmbeddingClient = YandexEmbeddingClient(yandexKey, folderId)
+    val textChunker = TextChunker()
+    val indexService = IndexService(yandexEmbeddingClient, textChunker)
+    val searchService = SearchService(yandexEmbeddingClient)
+    val gitClient = GitClient(File("."))
+    val developerAssistantServer = DeveloperAssistantMCPServer(
+        indexService = indexService,
+        searchService = searchService,
+        gitClient = gitClient,
+        projectRoot = File(".")
+    )
 
-    // 5. Агент с поддержкой всех серверов
+    // 6. Агент с поддержкой всех серверов
     val agent = YandexAIAgent(
         apiKey = yandexKey,
         folderId = folderId,
@@ -50,10 +68,11 @@ fun main() = runBlocking {
         summarizationMcpServer = summarizationServer,
         filesystemClient = filesystemClient,
         androidEnvironmentMcpServer = androidEnvServer,
+        developerAssistantMcpServer = developerAssistantServer,
         yandexGPTClient = yandexGPTClient
     )
 
-    // 6. Интерактивный режим
+    // 7. Интерактивный режим
     val scanner = Scanner(System.`in`)
 
     println("\n" + "=".repeat(60))
@@ -61,7 +80,9 @@ fun main() = runBlocking {
     println("=".repeat(60))
     println("CoinCap API: ${if (coinCapKey != null) "✅ Connected" else "❌ Not configured"}")
     println("Android Environment MCP: ✅ Enabled")
+    println("Developer Assistant (RAG + Git): ✅ Enabled")
     println("\n💬 Type 'exit' to quit")
+    println("💡 Try: /help - to get project overview")
     println("=".repeat(60))
     
     while (true) {
