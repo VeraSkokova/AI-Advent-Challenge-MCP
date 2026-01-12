@@ -69,6 +69,9 @@ class YandexAIAgent(
     suspend fun executeCommand(command: String): AgentResponse {
         logger.info("🤖 Processing command: $command")
 
+        val normalized = command.trim()
+        val isHelpOverviewCommand = normalized.equals("/help", ignoreCase = true)
+
         val isActionQuery = actionKeywords.any { command.lowercase().contains(it) }
         val mentionsApk = command.lowercase().contains("apk") ||
             command.lowercase().contains("прилож") ||
@@ -135,6 +138,11 @@ class YandexAIAgent(
                 executedCalls.add(toolCallWithResult)
                 rawResults[call.toolName] = result
                 currentContext = result
+
+                // /help без аргументов: возвращаем сырой результат help_overview (без дополнительной обработки LLM)
+                if (isHelpOverviewCommand && call.toolName == "help_overview" && !result.startsWith("Error")) {
+                    return AgentResponse(result, executedCalls, rawResults)
+                }
 
                 // Не прерываем пайплайн для informational tools: даем LLM шанс обработать вывод на следующей итерации.
                 if (!isActionQuery && call.toolName in purelyInformationalTools && result.startsWith("Error")) {
@@ -268,33 +276,44 @@ class YandexAIAgent(
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        // Поддерживаем оба формата, потому что LLM иногда присылает:
-        // 1) {"tools": [{...}]}
-        // 2) {"name": "tool", "params": {...}}
-        // и иногда оборачивает это в ```...
+        // Важный принцип: пытаемся парсить tool-calls ТОЛЬКО когда ответ выглядит как JSON.
+        // Иначе LLM-текст часто содержит фигурные скобки (например, код Kotlin), что не является JSON-инструкцией.
 
-        val objStart = response.indexOf('{')
-        val arrStart = response.indexOf('[')
+        val trimmed = response.trim()
 
-        val startIndex = when {
-            objStart == -1 && arrStart == -1 -> return emptyList()
-            objStart == -1 -> arrStart
-            arrStart == -1 -> objStart
-            else -> minOf(objStart, arrStart)
-        }
+        // Быстрый отбор: JSON-toolcall должен начинаться с '{', '[' или быть в Markdown fence ```...```
+        val looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("```")
+        if (!looksLikeJson) return emptyList()
 
-        val jsonString = when (response[startIndex]) {
+        // Если пришел Markdown fence, вырезаем содержимое
+        val cleaned = if (trimmed.startsWith("```")) {
+            // Удаляем первую строку с ``` и последнюю ``` если есть
+            trimmed
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+        } else trimmed
+
+        val startIndex = cleaned.indexOfFirst { it == '{' || it == '[' }
+        if (startIndex == -1) return emptyList()
+
+        val jsonString = when (cleaned[startIndex]) {
             '{' -> {
-                val end = response.lastIndexOf('}')
+                val end = cleaned.lastIndexOf('}')
                 if (end <= startIndex) return emptyList()
-                response.substring(startIndex, end + 1)
+                cleaned.substring(startIndex, end + 1)
             }
             '[' -> {
-                val end = response.lastIndexOf(']')
+                val end = cleaned.lastIndexOf(']')
                 if (end <= startIndex) return emptyList()
-                response.substring(startIndex, end + 1)
+                cleaned.substring(startIndex, end + 1)
             }
             else -> return emptyList()
+        }
+
+        // Доп. проверка: если это объект, но в нем нет ключей tools/name -> это почти точно не tool-call
+        if (jsonString.startsWith("{") && !(jsonString.contains("\"tools\"") || jsonString.contains("\"name\""))) {
+            return emptyList()
         }
 
         return try {
@@ -312,7 +331,8 @@ class YandexAIAgent(
                 else -> emptyList()
             }
         } catch (e: Exception) {
-            logger.error("❌ Failed to parse JSON: $jsonString. Error: ${e.message}")
+            // Это реально ошибка: ответ выглядел как JSON-инструкция, но распарсить не удалось
+            logger.error("❌ Failed to parse tool-call JSON: $jsonString. Error: ${e.message}")
             emptyList()
         }
     }
