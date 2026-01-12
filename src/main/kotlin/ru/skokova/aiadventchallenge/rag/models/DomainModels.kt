@@ -16,7 +16,9 @@ data class ChunkMetadata(
     val chunkIndex: Int,
     val totalChunksInFile: Int,
     val startPosition: Int,
-    val endPosition: Int
+    val endPosition: Int,
+    val startLine: Int = 0,
+    val endLine: Int = 0
 )
 
 @Serializable
