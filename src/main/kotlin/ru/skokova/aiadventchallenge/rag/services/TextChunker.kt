@@ -10,60 +10,87 @@ class TextChunker {
     private val logger = LoggerFactory.getLogger(TextChunker::class.java)
 
     fun chunkDocument(fileName: String, text: String): List<DocumentChunk> {
-        val sentenceRegex = Regex("(?<=[.!?\\n])\\s+")
-        val sentences = text.split(sentenceRegex).filter { it.isNotBlank() }
+        if (text.isBlank()) return emptyList()
 
+        val lines = text.lines()
         val chunks = mutableListOf<DocumentChunk>()
-        var currentChunkText = StringBuilder()
-        var currentChunkStart = 0
-        var currentChunkIndex = 0
-
+        
+        val currentChunkText = StringBuilder()
+        var currentChunkStartLine = 0 // 0-based index
+        
+        // Track character offset for legacy fields
+        // Since we are rebuilding text from lines, exact char match might vary if original had mixed line endings
+        // But for our purpose, we just want line numbers.
+        
         var i = 0
-        while (i < sentences.size) {
-            val sentence = sentences[i]
-
-            if (currentChunkText.length + sentence.length > Config.MAX_CHUNK_SIZE && currentChunkText.isNotEmpty()) {
-                chunks.add(createChunk(fileName, currentChunkText.toString(), currentChunkIndex, currentChunkStart))
-                currentChunkIndex++
+        while (i < lines.size) {
+            val line = lines[i]
+            // +1 for newline character approximation
+            val lineLength = line.length + 1 
+            
+            if (currentChunkText.length + lineLength > Config.MAX_CHUNK_SIZE && currentChunkText.isNotEmpty()) {
+                // Finalize current chunk
+                chunks.add(createChunk(
+                    fileName, 
+                    currentChunkText.toString(), 
+                    chunks.size, 
+                    currentChunkStartLine + 1, // 1-based
+                    i // 1-based, points to the line before current 'i'
+                ))
+                
+                // Start new chunk with overlap
                 currentChunkText.clear()
-
+                
+                // Backtrack to fill overlap
                 var overlapSize = 0
                 var backTrackIndex = i - 1
-                val overlapBuffer = StringBuilder()
-
+                val overlapBuffer = java.util.LinkedList<String>()
+                
                 while (backTrackIndex >= 0 && overlapSize < Config.CHUNK_OVERLAP) {
-                    val prevSentence = sentences[backTrackIndex]
-                    overlapBuffer.insert(0, "$prevSentence ")
-                    overlapSize += prevSentence.length + 1
+                    val prevLine = lines[backTrackIndex]
+                    overlapBuffer.addFirst(prevLine)
+                    overlapSize += prevLine.length + 1
                     backTrackIndex--
                 }
-
-                currentChunkText.append(overlapBuffer)
-                currentChunkStart += (chunks.last().text.length - overlapSize)
+                
+                // The new chunk starts from the first line of the overlap
+                currentChunkStartLine = backTrackIndex + 1
+                
+                overlapBuffer.forEach { 
+                    currentChunkText.append(it).append("\n") 
+                }
             }
-
-            currentChunkText.append(sentence).append(" ")
+            
+            currentChunkText.append(line).append("\n")
             i++
         }
 
         if (currentChunkText.isNotEmpty()) {
-            chunks.add(createChunk(fileName, currentChunkText.toString(), currentChunkIndex, currentChunkStart))
+            chunks.add(createChunk(
+                fileName, 
+                currentChunkText.toString(), 
+                chunks.size, 
+                currentChunkStartLine + 1, 
+                lines.size
+            ))
         }
 
         return chunks.map { it.copy(metadata = it.metadata.copy(totalChunksInFile = chunks.size)) }
     }
 
-    private fun createChunk(fileName: String, text: String, index: Int, startPos: Int): DocumentChunk {
+    private fun createChunk(fileName: String, text: String, index: Int, startLine: Int, endLine: Int): DocumentChunk {
         return DocumentChunk(
             id = UUID.randomUUID().toString(),
-            text = text.trim(),
+            text = text.trimEnd(), // Remove trailing newline
             embedding = emptyList(),
             metadata = ChunkMetadata(
                 sourceFile = fileName,
                 chunkIndex = index,
                 totalChunksInFile = 0,
-                startPosition = startPos,
-                endPosition = startPos + text.length
+                startPosition = 0, // Legacy, unused now
+                endPosition = 0,   // Legacy, unused now
+                startLine = startLine,
+                endLine = endLine
             )
         )
     }
