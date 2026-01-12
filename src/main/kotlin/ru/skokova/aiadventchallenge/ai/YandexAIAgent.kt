@@ -304,8 +304,16 @@ class YandexAIAgent(
         val looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("```")
         if (!looksLikeJson) return emptyList()
 
+        // ИСПРАВЛЕНИЕ: сначала удаляем markdown fence полностью, потом ищем скобки
         val cleaned = if (trimmed.startsWith("```")) {
-            trimmed.removePrefix("```").removeSuffix("```").trim()
+            // Удаляем открывающий ```
+            var content = trimmed.removePrefix("```")
+            // Удаляем возможный язык (json, kotlin, etc)
+            if (content.lines().first().all { it.isLetter() }) {
+                content = content.substringAfter('\n')
+            }
+            // Удаляем закрывающий ```
+            content.removeSuffix("```").trim()
         } else trimmed
 
         val startIndex = cleaned.indexOfFirst { it == '{' || it == '[' }
