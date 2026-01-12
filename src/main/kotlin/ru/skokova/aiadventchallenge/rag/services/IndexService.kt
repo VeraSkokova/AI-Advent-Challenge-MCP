@@ -23,7 +23,16 @@ class IndexService(
         }
 
         val files = folder.walkTopDown()
-            .filter { it.isFile && (it.extension == "md" || it.extension == "txt") }
+            .onEnter { file -> 
+                // Пропускаем скрытые папки (.git, .idea) и папки сборки (build, gradle)
+                !file.name.startsWith(".") && file.name != "build" && file.name != "gradle" 
+            }
+            .filter { file ->
+                if (!file.isFile) return@filter false
+                val ext = file.extension.lowercase()
+                // Теперь индексируем и Kotlin файлы
+                ext == "md" || ext == "txt" || ext == "kt"
+            }
             .toList()
 
         logger.info("Найдено документов для индексации: ${files.size}")
