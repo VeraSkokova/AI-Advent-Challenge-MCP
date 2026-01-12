@@ -118,24 +118,24 @@ class YandexAIAgent(
                 // ПРОВЕРКА НА ЗАЦИКЛИВАНИЕ
                 // Если мы уже вызывали этот инструмент с такими же параметрами в этом диалоге,
                 // значит LLM застряла и не понимает, что делать дальше.
-                val duplicateCall = executedCalls.find { 
-                    it.toolName == call.toolName && it.parameters == call.parameters 
+                val duplicateCall = executedCalls.find {
+                    it.toolName == call.toolName && it.parameters == call.parameters
                 }
-                
+
                 if (duplicateCall != null) {
                     logger.warn("⚠️ Detected duplicate tool call: ${call.toolName}. Preventing infinite loop.")
                     // Если зациклились на informational tool, скорее всего LLM забыла, что нужно ответить текстом.
                     // Возвращаем результат предыдущего вызова и прерываем.
                     if (call.toolName in purelyInformationalTools) {
-                         return AgentResponse(
-                             "Я нашел информацию, но не смог сформулировать ответ. Вот что удалось найти:\n\n${duplicateCall.result}",
-                             executedCalls, 
-                             rawResults
-                         )
+                        return AgentResponse(
+                            "Я нашел информацию, но не смог сформулировать ответ. Вот что удалось найти:\n\n${duplicateCall.result}",
+                            executedCalls,
+                            rawResults
+                        )
                     }
                     return AgentResponse(
-                        "Остановлено из-за обнаружения цикла (повторный вызов ${call.toolName}).", 
-                        executedCalls, 
+                        "Остановлено из-за обнаружения цикла (повторный вызов ${call.toolName}).",
+                        executedCalls,
                         rawResults
                     )
                 }
@@ -203,16 +203,16 @@ class YandexAIAgent(
         if (previousResults.isEmpty()) {
             return """
             ЗАДАЧА ПОЛЬЗОВАТЕЛЯ: "$originalCommand"
-            
+
             ВАЖНО: Извлекай параметры из текста задачи!
             Формат ответа СТРОГО JSON: {"tools": [{"name": "...", "params": {...}}]}
-            
+
             Примеры:
             - "Запусти эмулятор Pixel_5" -> {"tools": [{"name": "start_emulator", "params": {"avdName": "Pixel_5"}}]}
             - "Установи APK из /path/app.apk" -> {"tools": [{"name": "install_apk", "params": {"apkPath": "/path/app.apk", "reinstall": true}}]}
             - "/help" (без аргументов) -> {"tools": [{"name": "help_overview", "params": {}}]}
             - "/help как добавить MCP tool" -> {"tools": [{"name": "ask_project_docs", "params": {"query": "как добавить MCP tool"}}]}
-            
+
             ТВОЯ ЦЕЛЬ: Определить первый шаг.
             ВЕРНИ ТОЛЬКО JSON (без ``` и без пояснений).
             """.trimIndent()
@@ -236,20 +236,20 @@ class YandexAIAgent(
 
         return """
             ИСХОДНАЯ ЗАДАЧА: "$originalCommand"
-            
+
             ИСТОРИЯ ВЫПОЛНЕНИЯ:
             $history
-            
+
             ⬇️ РЕЗУЛЬТАТ ПОСЛЕДНЕГО ШАГА (${lastResult.toolName}):
             ${lastResult.result}
-            
+
             ТВОЯ ЦЕЛЬ:
             1. Если последний инструмент вернул контекст (например ask_project_docs/help_overview/git_status) -> СФОРМУЛИРУЙ финальный ответ пользователю на основе этих данных.
                - Ответ должен быть обычным текстом (НЕ JSON).
                - Укажи источники: перечисли файлы (sourceFile) из найденных чанков.
                - НЕ вызывай этот же инструмент снова!
             2. Если нужно продолжить цепочку -> верни JSON строго в формате {"tools": [{"name": "...", "params": {...}}]}.
-            
+
             ЕСЛИ ГОТОВ ОТВЕТИТЬ ПОЛЬЗОВАТЕЛЮ - пиши текст ответа.
             ЕСЛИ НУЖЕН ИНСТРУМЕНТ - пиши JSON.
         """.trimIndent()
@@ -271,26 +271,26 @@ class YandexAIAgent(
 
         return """
             Ты AI-агент. Твоя задача - выполнять цепочку действий для решения задачи пользователя.
-            
+
             ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
             $toolsDescription
-            
+
             ПРАВИЛА:
             1. ВСЕГДА извлекай параметры из текста задачи пользователя!
             2. Формат ответа для вызова инструмента - строго JSON: {"tools": [{"name": "...", "params": {...}}]}
             3. НЕ используй Markdown блоки (```)
             4. Если инструмент вернул ошибку, НЕ продолжай!
             5. При записи файлов используй папку "mcp-output/".
-            
+
             КОМАНДА /help:
             - Если пользователь пишет просто "/help" без аргументов -> вызови "help_overview" (без параметров)
             - Если пользователь пишет "/help <вопрос>" -> вызови "ask_project_docs" с параметром query=<вопрос>
-            
+
             ВАЖНО (RAG):
             - Инструмент ask_project_docs возвращает найденные чанки кода/доков.
             - После получения чанков СФОРМУЛИРУЙ человеческий ответ и обязательно укажи источники (список файлов), которые использовались.
             - НЕ ВЫЗЫВАЙ ask_project_docs повторно с тем же вопросом!
-            
+
             ANDROID РАБОЧИЙ ПРОЦЕСС:
             1. start_emulator -> запускает эмулятор
             2. wait_for_device -> ЖДЕТ полной загрузки (параметры {})
@@ -300,42 +300,32 @@ class YandexAIAgent(
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        val trimmed = response.trim()
-        val looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("```")
-        if (!looksLikeJson) return emptyList()
+        // "Проверенный" способ: ищем первую открывающую и последнюю закрывающую скобку.
+        // Дополнительно пытаемся "допочинить" JSON, если LLM забыла закрыть } или ].
 
-        // ИСПРАВЛЕНИЕ: сначала удаляем markdown fence полностью, потом ищем скобки
-        val cleaned = if (trimmed.startsWith("```")) {
-            // Удаляем открывающий ```
-            var content = trimmed.removePrefix("```")
-            // Удаляем возможный язык (json, kotlin, etc)
-            if (content.lines().first().all { it.isLetter() }) {
-                content = content.substringAfter('\n')
-            }
-            // Удаляем закрывающий ```
-            content.removeSuffix("```").trim()
-        } else trimmed
+        val startObj = response.indexOf('{')
+        val startArr = response.indexOf('[')
 
-        val startIndex = cleaned.indexOfFirst { it == '{' || it == '[' }
-        if (startIndex == -1) return emptyList()
-
-        val jsonString = when (cleaned[startIndex]) {
-            '{' -> {
-                val end = cleaned.lastIndexOf('}')
-                if (end <= startIndex) return emptyList()
-                cleaned.substring(startIndex, end + 1)
-            }
-            '[' -> {
-                val end = cleaned.lastIndexOf(']')
-                if (end <= startIndex) return emptyList()
-                cleaned.substring(startIndex, end + 1)
-            }
-            else -> return emptyList()
+        val startIndex = when {
+            startObj == -1 && startArr == -1 -> return emptyList()
+            startObj == -1 -> startArr
+            startArr == -1 -> startObj
+            else -> minOf(startObj, startArr)
         }
 
-        if (jsonString.startsWith("{") && !(jsonString.contains("\"tools\"") || jsonString.contains("\"name\""))) {
+        val endObj = response.lastIndexOf('}')
+        val endArr = response.lastIndexOf(']')
+        val endIndex = maxOf(endObj, endArr)
+        if (endIndex <= startIndex) return emptyList()
+
+        var jsonString = response.substring(startIndex, endIndex + 1).trim()
+
+        // Если в этом фрагменте нет признаков tool-call, то не считаем его JSON-инструкцией
+        if (!(jsonString.contains("\"tools\"") || jsonString.contains("\"name\""))) {
             return emptyList()
         }
+
+        jsonString = repairJsonIfNeeded(jsonString)
 
         return try {
             val element = json.parseToJsonElement(jsonString)
@@ -355,6 +345,50 @@ class YandexAIAgent(
             logger.error("❌ Failed to parse tool-call JSON: $jsonString. Error: ${e.message}")
             emptyList()
         }
+    }
+
+    private fun repairJsonIfNeeded(input: String): String {
+        // Закрываем незакрытые { или [ в конце строки.
+        // Делаем это аккуратно: игнорируем скобки внутри строк.
+
+        val stack = ArrayDeque<Char>()
+        var inString = false
+        var escaped = false
+
+        input.forEach { ch ->
+            if (inString) {
+                if (escaped) {
+                    escaped = false
+                    return@forEach
+                }
+                if (ch == '\\') {
+                    escaped = true
+                    return@forEach
+                }
+                if (ch == '"') {
+                    inString = false
+                }
+                return@forEach
+            }
+
+            when (ch) {
+                '"' -> inString = true
+                '{', '[' -> stack.addLast(ch)
+                '}' -> if (stack.isNotEmpty() && stack.last() == '{') stack.removeLast()
+                ']' -> if (stack.isNotEmpty() && stack.last() == '[') stack.removeLast()
+            }
+        }
+
+        if (stack.isEmpty()) return input
+
+        val sb = StringBuilder(input)
+        while (stack.isNotEmpty()) {
+            when (stack.removeLast()) {
+                '{' -> sb.append('}')
+                '[' -> sb.append(']')
+            }
+        }
+        return sb.toString()
     }
 
     private fun parseSingleToolObject(toolElement: JsonElement): ToolCall? {
