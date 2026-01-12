@@ -139,10 +139,11 @@ class DeveloperAssistantMCPServer(
         val sb = StringBuilder()
         sb.append("🔍 Found ${results.size} relevant context(s) for: '$query'\n\n")
         results.forEachIndexed { idx, result ->
-            sb.append("[${idx + 1}] 📄 ${result.chunk.metadata.sourceFile} (similarity: %.2f)\n".format(result.similarity))
-            sb.append("```\n${result.chunk.text.take(300)}")
-            if (result.chunk.text.length > 300) sb.append("...")
-            sb.append("\n```\n\n")
+            val meta = result.chunk.metadata
+            val lineInfo = if (meta.startLine > 0 && meta.endLine > 0) ":${meta.startLine}-${meta.endLine}" else ""
+            sb.append("[${idx + 1}] 📄 ${meta.sourceFile}$lineInfo (similarity: %.2f)\n".format(result.similarity))
+            // Возвращаем полный текст чанка для LLM
+            sb.append("```\n${result.chunk.text}\n```\n\n")
         }
         return sb.toString()
     }
