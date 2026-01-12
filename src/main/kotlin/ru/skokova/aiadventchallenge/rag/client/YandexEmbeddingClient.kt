@@ -11,11 +11,13 @@ import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
-import ru.skokova.aiadventchallenge.rag.config.Config
 import ru.skokova.aiadventchallenge.rag.models.EmbeddingRequest
 import ru.skokova.aiadventchallenge.rag.models.EmbeddingResponse
 
-class YandexEmbeddingClient {
+class YandexEmbeddingClient(
+    private val apiKey: String,
+    private val folderId: String
+) {
     private val logger = LoggerFactory.getLogger(YandexEmbeddingClient::class.java)
 
     private val client = HttpClient(CIO) {
@@ -30,8 +32,8 @@ class YandexEmbeddingClient {
         }
     }
 
-    private val docModelUri = "emb://${Config.folderId}/text-search-doc/latest"
-    private val queryModelUri = "emb://${Config.folderId}/text-search-query/latest"
+    private val docModelUri = "emb://$folderId/text-search-doc/latest"
+    private val queryModelUri = "emb://$folderId/text-search-query/latest"
     private val apiUrl = "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding"
 
     suspend fun getDocEmbedding(text: String): List<Double> {
@@ -49,7 +51,7 @@ class YandexEmbeddingClient {
         while (currentRetry < maxRetries) {
             try {
                 val response: EmbeddingResponse = client.post(apiUrl) {
-                    header("Authorization", "Api-Key ${Config.apiKey}")
+                    header("Authorization", "Api-Key $apiKey")
                     contentType(ContentType.Application.Json)
                     setBody(EmbeddingRequest(modelUri, text))
                 }.body()
