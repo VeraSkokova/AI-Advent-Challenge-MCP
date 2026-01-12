@@ -115,6 +115,31 @@ class YandexAIAgent(
             }
 
             for (call in toolCalls) {
+                // ПРОВЕРКА НА ЗАЦИКЛИВАНИЕ
+                // Если мы уже вызывали этот инструмент с такими же параметрами в этом диалоге,
+                // значит LLM застряла и не понимает, что делать дальше.
+                val duplicateCall = executedCalls.find { 
+                    it.toolName == call.toolName && it.parameters == call.parameters 
+                }
+                
+                if (duplicateCall != null) {
+                    logger.warn("⚠️ Detected duplicate tool call: ${call.toolName}. Preventing infinite loop.")
+                    // Если зациклились на informational tool, скорее всего LLM забыла, что нужно ответить текстом.
+                    // Возвращаем результат предыдущего вызова и прерываем.
+                    if (call.toolName in purelyInformationalTools) {
+                         return AgentResponse(
+                             "Я нашел информацию, но не смог сформулировать ответ. Вот что удалось найти:\n\n${duplicateCall.result}",
+                             executedCalls, 
+                             rawResults
+                         )
+                    }
+                    return AgentResponse(
+                        "Остановлено из-за обнаружения цикла (повторный вызов ${call.toolName}).", 
+                        executedCalls, 
+                        rawResults
+                    )
+                }
+
                 logger.info("🔧 Executing tool: ${call.toolName} with params: ${call.parameters}")
 
                 val result = try {
@@ -139,17 +164,14 @@ class YandexAIAgent(
                 rawResults[call.toolName] = result
                 currentContext = result
 
-                // /help без аргументов: возвращаем сырой результат help_overview (без дополнительной обработки LLM)
                 if (isHelpOverviewCommand && call.toolName == "help_overview" && !result.startsWith("Error")) {
                     return AgentResponse(result, executedCalls, rawResults)
                 }
 
-                // Не прерываем пайплайн для informational tools: даем LLM шанс обработать вывод на следующей итерации.
                 if (!isActionQuery && call.toolName in purelyInformationalTools && result.startsWith("Error")) {
                     return AgentResponse("Произошла ошибка при получении информации: $result", executedCalls, rawResults)
                 }
 
-                // Ранний выход для Android сценариев оставляем
                 if (!mentionsApk &&
                     call.toolName == "start_emulator" &&
                     result.contains("\"status\": \"success\"")) {
@@ -225,6 +247,7 @@ class YandexAIAgent(
             1. Если последний инструмент вернул контекст (например ask_project_docs/help_overview/git_status) -> СФОРМУЛИРУЙ финальный ответ пользователю на основе этих данных.
                - Ответ должен быть обычным текстом (НЕ JSON).
                - Укажи источники: перечисли файлы (sourceFile) из найденных чанков.
+               - НЕ вызывай этот же инструмент снова!
             2. Если нужно продолжить цепочку -> верни JSON строго в формате {"tools": [{"name": "...", "params": {...}}]}.
             
             ЕСЛИ ГОТОВ ОТВЕТИТЬ ПОЛЬЗОВАТЕЛЮ - пиши текст ответа.
@@ -266,6 +289,7 @@ class YandexAIAgent(
             ВАЖНО (RAG):
             - Инструмент ask_project_docs возвращает найденные чанки кода/доков.
             - После получения чанков СФОРМУЛИРУЙ человеческий ответ и обязательно укажи источники (список файлов), которые использовались.
+            - НЕ ВЫЗЫВАЙ ask_project_docs повторно с тем же вопросом!
             
             ANDROID РАБОЧИЙ ПРОЦЕСС:
             1. start_emulator -> запускает эмулятор
@@ -276,22 +300,12 @@ class YandexAIAgent(
     }
 
     private fun parseToolCalls(response: String): List<ToolCall> {
-        // Важный принцип: пытаемся парсить tool-calls ТОЛЬКО когда ответ выглядит как JSON.
-        // Иначе LLM-текст часто содержит фигурные скобки (например, код Kotlin), что не является JSON-инструкцией.
-
         val trimmed = response.trim()
-
-        // Быстрый отбор: JSON-toolcall должен начинаться с '{', '[' или быть в Markdown fence ```...```
         val looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("```")
         if (!looksLikeJson) return emptyList()
 
-        // Если пришел Markdown fence, вырезаем содержимое
         val cleaned = if (trimmed.startsWith("```")) {
-            // Удаляем первую строку с ``` и последнюю ``` если есть
-            trimmed
-                .removePrefix("```")
-                .removeSuffix("```")
-                .trim()
+            trimmed.removePrefix("```").removeSuffix("```").trim()
         } else trimmed
 
         val startIndex = cleaned.indexOfFirst { it == '{' || it == '[' }
@@ -311,7 +325,6 @@ class YandexAIAgent(
             else -> return emptyList()
         }
 
-        // Доп. проверка: если это объект, но в нем нет ключей tools/name -> это почти точно не tool-call
         if (jsonString.startsWith("{") && !(jsonString.contains("\"tools\"") || jsonString.contains("\"name\""))) {
             return emptyList()
         }
@@ -331,7 +344,6 @@ class YandexAIAgent(
                 else -> emptyList()
             }
         } catch (e: Exception) {
-            // Это реально ошибка: ответ выглядел как JSON-инструкция, но распарсить не удалось
             logger.error("❌ Failed to parse tool-call JSON: $jsonString. Error: ${e.message}")
             emptyList()
         }
