@@ -43,6 +43,8 @@ class YandexAIAgent(
         coerceInputValues = true
     }
     
+    // Tools that are purely informational but we WANT the LLM to process their output
+    // instead of returning raw JSON/logs directly to the user.
     private val purelyInformationalTools = setOf(
         "list_devices",
         "check_adb",
@@ -103,6 +105,7 @@ class YandexAIAgent(
 
             val toolCalls = parseToolCalls(response)
 
+            // Если инструментов нет, значит LLM вернула финальный текстовый ответ
             if (toolCalls.isEmpty()) {
                 logger.info("✅ LLM вернула финальный ответ")
                 return AgentResponse(response, executedCalls, rawResults)
@@ -133,13 +136,19 @@ class YandexAIAgent(
                 rawResults[call.toolName] = result
                 currentContext = result
                 
+                // --- ИЗМЕНЕНИЕ ЛОГИКИ ---
+                // Раньше мы сразу возвращали результат, если это informational tool.
+                // Теперь мы позволяем циклу продолжиться, чтобы LLM могла получить этот результат
+                // и сформировать финальный ответ на следующей итерации.
+                // Исключение: если произошла ошибка, лучше остановиться.
+                
                 if (!isActionQuery && 
                     call.toolName in purelyInformationalTools && 
-                    !result.startsWith("Error")) {
-                    logger.info("✅ Informational tool '${call.toolName}' completed successfully. Stopping pipeline.")
-                    return AgentResponse(result, executedCalls, rawResults)
+                    result.startsWith("Error")) {
+                     return AgentResponse("Произошла ошибка при получении информации: $result", executedCalls, rawResults)
                 }
                 
+                // Ранний выход для Android сценариев оставляем, так как там важен факт запуска, а не текст
                 if (!mentionsApk && 
                     call.toolName == "start_emulator" && 
                     result.contains("\"status\": \"success\"")) {
@@ -161,7 +170,8 @@ class YandexAIAgent(
             rawResults
         )
     }
-
+    
+    // ... (остальные методы без изменений)
     private fun buildContextMessage(
         originalCommand: String, 
         currentContext: String, 
@@ -209,7 +219,9 @@ class YandexAIAgent(
             ⬇️ РЕЗУЛЬТАТ ПОСЛЕДНЕГО ШАГА (${lastResult.toolName}):
             ${lastResult.result}
             
-            ТВОЯ ЦЕЛЬ: Вызвать следующий инструмент.
+            ТВОЯ ЦЕЛЬ:
+            1. Если получен ответ от ask_project_docs/help_overview/list_... -> СФОРМУЛИРУЙ финальный ответ пользователю на основе этих данных. Не используй JSON, просто верни текст.
+            2. Если нужно продолжить цепочку (например, после git_status нужен git_diff) -> верни JSON с следующим инструментом.
             
             ВАЖНЫЕ ПРАВИЛА:
             1. ВСЕГДА извлекай параметры из ИСХОДНОЙ ЗАДАЧИ.
@@ -220,10 +232,12 @@ class YandexAIAgent(
             6. install_apk ВСЕГДА с reinstall: true.
             7. Для start_app: СТРОГО ПЕРЕДАВАЙ ПУСТЫЕ ПАРАМЕТРЫ {}. НЕ указывай packageName/activityName - система сама возьмет их из установленного APK.
             
-            ВЕРНИ ТОЛЬКО JSON с инструментом и параметрами.
+            ЕСЛИ ГОТОВ ОТВЕТИТЬ ПОЛЬЗОВАТЕЛЮ - пиши текст ответа (без JSON).
+            ЕСЛИ НУЖЕН ИНСТРУМЕНТ - пиши JSON.
         """.trimIndent()
     }
-
+    
+    // ... parseToolCalls и buildSystemPrompt остаются теми же, они не менялись в этом блоке
     private suspend fun buildSystemPrompt(): String {
         val allTools = mutableListOf<ToolInfo>()
         allTools.addAll(reminderMcpServer.getToolsList())
