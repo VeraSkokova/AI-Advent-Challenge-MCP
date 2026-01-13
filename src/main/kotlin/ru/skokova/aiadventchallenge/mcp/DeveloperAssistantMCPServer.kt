@@ -2,6 +2,7 @@ package ru.skokova.aiadventchallenge.mcp
 
 import org.slf4j.LoggerFactory
 import ru.skokova.aiadventchallenge.git.GitClient
+import ru.skokova.aiadventchallenge.git.GitHubClient
 import ru.skokova.aiadventchallenge.rag.services.IndexService
 import ru.skokova.aiadventchallenge.rag.services.SearchService
 import ru.skokova.aiadventchallenge.rag.models.VectorIndex
@@ -12,6 +13,7 @@ class DeveloperAssistantMCPServer(
     private val indexService: IndexService,
     private val searchService: SearchService,
     private val gitClient: GitClient,
+    private val gitHubClient: GitHubClient? = null, // Optional, can be null if no token provided
     private val projectRoot: File = File(".")
 ) {
     private val logger = LoggerFactory.getLogger(DeveloperAssistantMCPServer::class.java)
@@ -63,13 +65,18 @@ class DeveloperAssistantMCPServer(
             ),
             ToolInfo(
                 name = "get_pr_diff",
-                description = "Получить полный diff изменений для ревью. Используй для анализа кода перед коммитом.",
+                description = "Получить полный diff локальных изменений. Используй для анализа кода перед коммитом.",
                 parameters = listOf()
             ),
              ToolInfo(
                 name = "read_file",
                 description = "Прочитать содержимое файла. Используй, если контекста из diff недостаточно или RAG предложил посмотреть файл.",
                 parameters = listOf("path")
+            ),
+            ToolInfo(
+                name = "fetch_github_pr_diff",
+                description = "Получить diff Pull Request-а с GitHub. Требует GITHUB_TOKEN в конфигурации.",
+                parameters = listOf("owner", "repo", "pr_number")
             )
         )
     }
@@ -103,6 +110,13 @@ class DeveloperAssistantMCPServer(
             "read_file" -> {
                 val path = params["path"] as? String ?: return "Error: 'path' parameter required"
                 handleReadFile(path)
+            }
+            "fetch_github_pr_diff" -> {
+                if (gitHubClient == null) return "Error: GitHub Client not configured (missing GITHUB_TOKEN)."
+                val owner = params["owner"] as? String ?: return "Error: 'owner' required"
+                val repo = params["repo"] as? String ?: return "Error: 'repo' required"
+                val prNum = (params["pr_number"]?.toString()?.toIntOrNull()) ?: return "Error: 'pr_number' required (int)"
+                gitHubClient.getPullRequestDiff(owner, repo, prNum)
             }
             else -> "Error: Unknown tool $toolName"
         }
