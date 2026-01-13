@@ -16,36 +16,60 @@ class IndexService(
     private val logger = LoggerFactory.getLogger(IndexService::class.java)
     private val json = Json { prettyPrint = true }
 
+    // Overload for single path for backward compatibility
     suspend fun createIndex(folderPath: String): VectorIndex {
-        // Используем canonicalFile, чтобы разрешить относительные пути типа "." в реальные имена папок
-        val folder = File(folderPath).canonicalFile
-        if (!folder.exists() || !folder.isDirectory) {
-            throw IllegalArgumentException("Папка не найдена: $folderPath (resolved: ${folder.absolutePath})")
+        return createIndex(listOf(folderPath))
+    }
+
+    suspend fun createIndex(paths: List<String>): VectorIndex {
+        val allChunks = mutableListOf<DocumentChunk>()
+        val filesToIndex = mutableSetOf<File>()
+
+        paths.forEach { path ->
+            val folder = File(path).canonicalFile
+            if (!folder.exists()) {
+                logger.warn("Путь не найден: $path (resolved: ${folder.absolutePath})")
+                return@forEach
+            }
+
+            if (folder.isFile) {
+                if (shouldIndexFile(folder)) filesToIndex.add(folder)
+            } else {
+                folder.walkTopDown()
+                    .onEnter { file ->
+                        // Всегда заходим в корневую папку поиска
+                        if (file.absolutePath == folder.absolutePath) return@onEnter true
+                        
+                        // Игнорируем технические папки
+                        val name = file.name
+                        !name.startsWith(".") && 
+                        name != "build" && 
+                        name != "gradle" && 
+                        name != "resources" // Skip resources to avoid binary files
+                    }
+                    .filter { file -> 
+                        file.isFile && shouldIndexFile(file)
+                    }
+                    .forEach { filesToIndex.add(it) }
+            }
         }
 
-        val files = folder.walkTopDown()
-            .onEnter { file -> 
-                // Всегда заходим в корневую папку, даже если она начинается с точки (или является ".")
-                if (file.absolutePath == folder.absolutePath) return@onEnter true
-                
-                // Пропускаем скрытые папки (.git, .idea) и папки сборки (build, gradle)
-                !file.name.startsWith(".") && file.name != "build" && file.name != "gradle" 
+        logger.info("Найдено уникальных файлов для индексации: ${filesToIndex.size}")
+
+        filesToIndex.forEachIndexed { index, file ->
+            logger.info("[${index + 1}/${filesToIndex.size}] Индексация: ${file.path}")
+
+            val text = try {
+                file.readText()
+            } catch (e: Exception) {
+                logger.warn("Не удалось прочитать файл ${file.name}: ${e.message}")
+                return@forEachIndexed
             }
-            .filter { file ->
-                if (!file.isFile) return@filter false
-                val ext = file.extension.lowercase()
-                ext == "md" || ext == "txt" || ext == "kt"
-            }
-            .toList()
 
-        logger.info("Найдено документов для индексации: ${files.size}")
-
-        val allChunks = mutableListOf<DocumentChunk>()
-
-        files.forEachIndexed { index, file ->
-            logger.info("[${index + 1}/${files.size}] Обработка файла: ${file.name}")
-
-            val text = file.readText()
+            // Добавляем путь к имени файла, чтобы RAG мог точнее ссылаться
+            // Но берем относительный путь от корня проекта, если возможно
+            val relativePath = file.path.substringAfterLast("src/").substringAfterLast("docs/")
+            
             val chunks = chunker.chunkDocument(file.name, text)
 
             val enrichedChunks = chunks.map { chunk ->
@@ -53,7 +77,7 @@ class IndexService(
                     val embedding = client.getDocEmbedding(chunk.text)
                     chunk.copy(embedding = embedding)
                 } catch (e: Exception) {
-                    logger.error("Не удалось получить эмбеддинг для чанка ${chunk.id}: ${e.message}")
+                    logger.error("Ошибка API эмбеддингов для ${chunk.id}: ${e.message}")
                     chunk
                 }
             }.filter { it.embedding.isNotEmpty() }
@@ -67,13 +91,20 @@ class IndexService(
         )
     }
 
-    fun saveIndex(index: VectorIndex, path: String = "index.json") {
+    private fun shouldIndexFile(file: File): Boolean {
+        val ext = file.extension.lowercase()
+        // Index Markdown, Text, Kotlin files. 
+        // Also ensure we don't index Generated files or huge assets
+        return (ext == "md" || ext == "txt" || ext == "kt") && file.length() < 1_000_000 // Skip files > 1MB
+    }
+
+    fun saveIndex(index: VectorIndex, path: String = "rag_index.json") {
         val file = File(path)
         file.writeText(json.encodeToString(index))
         logger.info("Индекс сохранен в файл: ${file.absolutePath} (Всего чанков: ${index.chunks.size})")
     }
 
-    fun loadIndex(path: String = "index.json"): VectorIndex? {
+    fun loadIndex(path: String = "rag_index.json"): VectorIndex? {
         val file = File(path)
         if (!file.exists()) return null
         return try {
