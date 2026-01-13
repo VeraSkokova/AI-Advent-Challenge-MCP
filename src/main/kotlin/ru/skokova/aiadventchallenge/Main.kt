@@ -4,8 +4,10 @@ import ru.skokova.aiadventchallenge.mcp.DeveloperAssistantMCPServer
 import ru.skokova.aiadventchallenge.mcp.FilesystemMCPClient
 import ru.skokova.aiadventchallenge.ai.YandexGPTClient
 import ru.skokova.aiadventchallenge.git.GitClient
+import ru.skokova.aiadventchallenge.rag.client.YandexEmbeddingClient
 import ru.skokova.aiadventchallenge.rag.services.IndexService
 import ru.skokova.aiadventchallenge.rag.services.SearchService
+import ru.skokova.aiadventchallenge.rag.services.TextChunker
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import org.slf4j.LoggerFactory
@@ -24,8 +26,11 @@ fun main() = runBlocking {
     
     // 1. Initialize Components
     val gitClient = GitClient(projectRoot)
-    val indexService = IndexService()
-    val searchService = SearchService()
+    val embeddingClient = YandexEmbeddingClient(apiKey, folderId)
+    val chunker = TextChunker()
+    
+    val indexService = IndexService(embeddingClient, chunker)
+    val searchService = SearchService(embeddingClient)
     val gptClient = YandexGPTClient(apiKey, folderId)
     
     val mcpServer = DeveloperAssistantMCPServer(
@@ -110,7 +115,7 @@ fun main() = runBlocking {
     val review = gptClient.chat(systemPrompt, userPrompt, model = "yandexgpt")
 
     // 6. Output
-    println("\n" + "=" * 20 + " AI Code Review " + "=" * 20)
+    println("\n" + "=".repeat(20) + " AI Code Review " + "=".repeat(20))
     println(review)
-    println("=" * 56)
+    println("=".repeat(56))
 }
