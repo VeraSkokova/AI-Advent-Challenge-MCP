@@ -12,21 +12,26 @@ import ru.skokova.aiadventchallenge.utils.loadProperties
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import org.slf4j.LoggerFactory
+import kotlin.system.exitProcess
 
-fun main() = runBlocking {
-    val logger = LoggerFactory.getLogger("Main")
+fun main(args: Array<String>) = runBlocking {
+    val logger = LoggerFactory.getLogger("ReviewPipeline")
     val projectRoot = File(".")
 
-    // 0. Environment / local.properties Check
+    // 0. Configuration & Environment
     val props = loadProperties()
-    val apiKey = getEnvOrProperty("YANDEX_API_KEY", props)
+    val apiKey = try {
+        getEnvOrProperty("YANDEX_API_KEY", props)
+    } catch (e: Exception) {
+        logger.error("❌ Configuration error: ${e.message}")
+        return@runBlocking
+    }
     val folderId = getEnvOrProperty("YANDEX_FOLDER_ID", props)
 
-    // 1. Initialize Components
+    // 1. Initialize Core Services
     val gitClient = GitClient(projectRoot)
     val embeddingClient = YandexEmbeddingClient(apiKey, folderId)
     val chunker = TextChunker()
-
     val indexService = IndexService(embeddingClient, chunker)
     val searchService = SearchService(embeddingClient)
     val gptClient = YandexGPTClient(apiKey, folderId)
@@ -37,84 +42,105 @@ fun main() = runBlocking {
         gitClient = gitClient,
         projectRoot = projectRoot
     )
+    
+    // 2. Parse Command (Pipeline Entry Point)
+    val command = args.firstOrNull() ?: "review" // Default action
+    
+    logger.info("🚀 Starting Pipeline Action: $command")
+    
+    when (command) {
+        "index" -> {
+            logger.info("📚 Building RAG Index from docs/ ...")
+            val index = indexService.createIndex(File(projectRoot, "docs").absolutePath)
+            indexService.saveIndex(index)
+            logger.info("✅ Indexing complete. Saved ${index.chunks.size} chunks.")
+        }
+        "review" -> {
+            executeReviewPipeline(logger, mcpServer, gptClient)
+        }
+        else -> {
+            logger.error("Unknown command: $command. Available: 'index', 'review'")
+            exitProcess(1)
+        }
+    }
+}
 
-    logger.info("🤖 AI Code Review Assistant Started")
-
-    // 2. Get Diff (MCP Tool)
-    logger.info("📄 Fetching git diff...")
+suspend fun executeReviewPipeline(
+    logger: org.slf4j.Logger,
+    mcpServer: DeveloperAssistantMCPServer,
+    gptClient: YandexGPTClient
+) {
+    // Pipeline Step 1: Get Changes
+    logger.info("🔹 [Step 1] Fetching git diff via MCP...")
     val diff = mcpServer.executeTool("get_pr_diff", emptyMap())
-
+    
     if (diff.startsWith("No changes") || diff.isBlank()) {
-        println("✅ No changes to review.")
-        return@runBlocking
+        logger.info("✅ No changes detected. Pipeline finished.")
+        return
     }
+    logger.info("   Diff found: ${diff.length} chars")
 
-    logger.info("🔍 Diff size: ${diff.length} chars")
-
-    // 3. Extract Keywords & Get RAG Context
-    val keywords = Regex("""\b([A-Z][a-zA-Z0-9]+)\b|\b([a-zA-Z0-9]+\.kt)\b""")
-        .findAll(diff)
-        .map { it.value }
-        .distinct()
-        .filter { it.length > 3 }
-        .take(5)
-        .joinToString(" ")
-
-    logger.info("📚 Searching RAG context for keywords: $keywords")
-    val ragContext = if (keywords.isNotEmpty()) {
-        mcpServer.executeTool(
-            "ask_project_docs",
-            mapOf("query" to "Review rules and architecture related to: $keywords")
-        )
+    // Pipeline Step 2: Context Retrieval (RAG)
+    // We specifically look for policy violations keywords in diff to match docs
+    val keywords = listOf("println", "System.out", "TODO", "catch", "Exception", "key", "token", "password")
+    val diffKeywords = keywords.filter { diff.contains(it) }.joinToString(" ")
+    
+    val query = if (diffKeywords.isNotEmpty()) {
+        "Find coding standards and rules about: $diffKeywords"
     } else {
-        "No specific keywords found for RAG context."
+        "General coding standards and best practices"
     }
-
-    // 4. Construct Prompt
+    
+    logger.info("🔹 [Step 2] Querying RAG Knowledge Base...")
+    logger.info("   Query: '$query'")
+    
+    val ragContext = mcpServer.executeTool("ask_project_docs", mapOf("query" to query))
+    
+    // Pipeline Step 3: Analysis (LLM)
+    logger.info("🔹 [Step 3] Running AI Analysis...")
+    
     val systemPrompt = """
-        Ты - Senior Kotlin Developer и техлид проекта.
-        Твоя задача: провести Code Review изменений в репозитории.
-
-        Используй следующие критерии:
-        1. Clean Architecture и SOLID.
-        2. Kotlin Code Conventions (naming, null-safety).
-        3. Обработка ошибок (try-catch, Result, logging).
-        4. Отсутствие hardcoded значений.
-        5. Читаемость и поддерживаемость.
-
-        Формат ответа (Markdown):
-        ## Summary
-        Краткое описание изменений (1-2 предложения).
-
-        ## Code Review
-        Список замечаний. Для каждого замечания укажи:
-        - 🔴 Critical / 🟡 Warning / 🟢 Info
-        - Файл (если понятно из диффа)
-        - Суть проблемы
-        - Пример улучшения (код)
-
-        ## Verdict
-        APPROVE / REQUEST CHANGES
+        You are an AI Code Reviewer enforcing strict project policies.
+        
+        YOUR GOAL:
+        Analyze the provided Git Diff against the provided Documentation Context.
+        
+        STRICT REQUIREMENT:
+        If you find a violation of a rule found in the Context:
+        1. Quote the rule ID and Description.
+        2. Cite the source document name.
+        3. Point to the specific line in the diff.
+        
+        Format:
+        ## 🚨 Violations Found
+        
+        ### [Rule ID] Rule Name
+        **Source:** `Filename.md`
+        **Violation:** Description of what is wrong.
+        **Fix:**
+        ```kotlin
+        // Correct code
+        ```
+        
+        If no strict violations are found, provide a general "Best Practices" review.
     """.trimIndent()
 
     val userPrompt = """
-        ### Context from Documentation/Codebase (RAG):
+        ### 📚 Documentation Context (Ground Truth):
         $ragContext
-
-        ### Changes (Git Diff):
+        
+        ### 📝 Code Changes (Git Diff):
         ```diff
         $diff
         ```
-
-        Review this code.
+        
+        Analyze now.
     """.trimIndent()
 
-    // 5. Generate Review
-    logger.info("🧠 Generating review with YandexGPT...")
     val review = gptClient.chat(systemPrompt, userPrompt, model = "yandexgpt")
 
-    // 6. Output
-    println("\n" + "=".repeat(20) + " AI Code Review " + "=".repeat(20))
+    // Pipeline Step 4: Report
+    println("\n" + "=".repeat(20) + " AI Review Report " + "=".repeat(20))
     println(review)
-    println("=".repeat(56))
+    println("=".repeat(58))
 }
