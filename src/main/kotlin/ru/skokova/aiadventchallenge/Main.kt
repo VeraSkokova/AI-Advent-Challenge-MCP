@@ -3,6 +3,7 @@ package ru.skokova.aiadventchallenge
 import ru.skokova.aiadventchallenge.mcp.DeveloperAssistantMCPServer
 import ru.skokova.aiadventchallenge.ai.YandexGPTClient
 import ru.skokova.aiadventchallenge.git.GitClient
+import ru.skokova.aiadventchallenge.git.GitHubClient
 import ru.skokova.aiadventchallenge.rag.client.YandexEmbeddingClient
 import ru.skokova.aiadventchallenge.rag.services.IndexService
 import ru.skokova.aiadventchallenge.rag.services.SearchService
@@ -27,9 +28,12 @@ fun main(args: Array<String>) = runBlocking {
         return@runBlocking
     }
     val folderId = getEnvOrProperty("YANDEX_FOLDER_ID", props)
+    // Optional: GITHUB_TOKEN
+    val githubToken = System.getenv("GITHUB_TOKEN") ?: props?.getProperty("GITHUB_TOKEN")
 
     // 1. Initialize Core Services
     val gitClient = GitClient(projectRoot)
+    val githubClient = GitHubClient(githubToken)
     val embeddingClient = YandexEmbeddingClient(apiKey, folderId)
     val chunker = TextChunker()
     val indexService = IndexService(embeddingClient, chunker)
@@ -40,18 +44,18 @@ fun main(args: Array<String>) = runBlocking {
         indexService = indexService,
         searchService = searchService,
         gitClient = gitClient,
+        gitHubClient = githubClient,
         projectRoot = projectRoot
     )
     
     // 2. Parse Command (Pipeline Entry Point)
-    val command = args.firstOrNull() ?: "review" // Default action
+    val command = args.firstOrNull() ?: "review" 
     
     logger.info("🚀 Starting Pipeline Action: $command")
     
-    when (command) {
-        "index" -> {
+    when {
+        command == "index" -> {
             logger.info("📚 Building RAG Index from docs/ and src/main/kotlin ...")
-            // Pass list of folders to index
             val paths = listOf(
                 File(projectRoot, "docs").absolutePath,
                 File(projectRoot, "src/main/kotlin").absolutePath
@@ -60,27 +64,56 @@ fun main(args: Array<String>) = runBlocking {
             indexService.saveIndex(index)
             logger.info("✅ Indexing complete. Saved ${index.chunks.size} chunks.")
         }
-        "review" -> {
-            executeReviewPipeline(logger, mcpServer, gptClient)
+        command == "review" -> {
+            logger.info("🔹 Fetching LOCAL git diff...")
+            val diff = mcpServer.executeTool("get_pr_diff", emptyMap())
+            executeReviewAnalysis(logger, diff, mcpServer, gptClient)
+        }
+        command.startsWith("review_pr") -> {
+            // Usage: review_pr https://github.com/owner/repo/pull/123
+            val url = args.getOrNull(1)
+            if (url == null) {
+                logger.error("❌ Usage: review_pr <github_pr_url>")
+                return@runBlocking
+            }
+            
+            // Parse URL: https://github.com/owner/repo/pull/123
+            val regex = Regex("""github\.com/([^/]+)/([^/]+)/pull/(\d+)""")
+            val match = regex.find(url)
+            if (match == null) {
+                logger.error("❌ Invalid GitHub PR URL format. Expected: https://github.com/owner/repo/pull/123")
+                return@runBlocking
+            }
+            
+            val (owner, repo, prNum) = match.destructured
+            logger.info("🔹 Fetching REMOTE PR diff for $owner/$repo #$prNum...")
+            
+            val diff = mcpServer.executeTool("fetch_github_pr_diff", mapOf(
+                "owner" to owner,
+                "repo" to repo,
+                "pr_number" to prNum.toInt()
+            ))
+            
+            executeReviewAnalysis(logger, diff, mcpServer, gptClient)
         }
         else -> {
-            logger.error("Unknown command: $command. Available: 'index', 'review'")
+            logger.error("Unknown command: $command. Available: 'index', 'review', 'review_pr <url>'")
             exitProcess(1)
         }
     }
 }
 
-suspend fun executeReviewPipeline(
+/**
+ * Common logic for analyzing code regardless of source (local diff or remote PR)
+ */
+suspend fun executeReviewAnalysis(
     logger: org.slf4j.Logger,
+    diff: String,
     mcpServer: DeveloperAssistantMCPServer,
     gptClient: YandexGPTClient
 ) {
-    // Pipeline Step 1: Get Changes
-    logger.info("🔹 [Step 1] Fetching git diff via MCP...")
-    val diff = mcpServer.executeTool("get_pr_diff", emptyMap())
-    
-    if (diff.startsWith("No changes") || diff.isBlank()) {
-        logger.info("✅ No changes detected. Pipeline finished.")
+    if (diff.startsWith("No changes") || diff.isBlank() || diff.startsWith("Error")) {
+        logger.info("⚠️ Review aborted. Reason: $diff")
         return
     }
     logger.info("   Diff found: ${diff.length} chars")
