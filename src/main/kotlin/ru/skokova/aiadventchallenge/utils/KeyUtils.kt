@@ -1,6 +1,7 @@
 package ru.skokova.aiadventchallenge.utils
 
 import java.util.Properties
+import java.io.File
 
 fun getEnvOrProperty(key: String, properties: Properties?): String {
     // 1. Ищем в ENV (приоритет)
@@ -13,4 +14,18 @@ fun getEnvOrProperty(key: String, properties: Properties?): String {
 
     // 3. Падаем, если не нашли
     throw IllegalStateException("Missing configuration: $key. Please set it in ENV or local.properties")
+}
+
+// Added for testing AI Reviewer
+fun awfulFunction() {
+    val secret = "12345" // Hardcoded secret
+    println("Secret is $secret") // System.out usage
+    
+    try {
+        // some logic
+        val f = File("temp.txt")
+        f.writeText("test")
+    } catch (e: Exception) {
+        // empty catch block
+    }
 }
