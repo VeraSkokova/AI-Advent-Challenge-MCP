@@ -50,8 +50,13 @@ fun main(args: Array<String>) = runBlocking {
     
     when (command) {
         "index" -> {
-            logger.info("📚 Building RAG Index from docs/ ...")
-            val index = indexService.createIndex(File(projectRoot, "docs").absolutePath)
+            logger.info("📚 Building RAG Index from docs/ and src/main/kotlin ...")
+            // Pass list of folders to index
+            val paths = listOf(
+                File(projectRoot, "docs").absolutePath,
+                File(projectRoot, "src/main/kotlin").absolutePath
+            )
+            val index = indexService.createIndex(paths)
             indexService.saveIndex(index)
             logger.info("✅ Indexing complete. Saved ${index.chunks.size} chunks.")
         }
@@ -85,10 +90,16 @@ suspend fun executeReviewPipeline(
     val keywords = listOf("println", "System.out", "TODO", "catch", "Exception", "key", "token", "password")
     val diffKeywords = keywords.filter { diff.contains(it) }.joinToString(" ")
     
-    val query = if (diffKeywords.isNotEmpty()) {
-        "Find coding standards and rules about: $diffKeywords"
-    } else {
-        "General coding standards and best practices"
+    // Also include class names from the diff to find relevant code
+    val classNames = Regex("""class\s+([A-Z][a-zA-Z0-9]+)""")
+        .findAll(diff)
+        .map { it.groupValues[1] }
+        .joinToString(" ")
+
+    val query = buildString {
+        if (diffKeywords.isNotEmpty()) append("Find coding standards and rules about: $diffKeywords. ")
+        if (classNames.isNotEmpty()) append("Find existing code related to: $classNames. ")
+        if (isEmpty()) append("General coding standards and best practices")
     }
     
     logger.info("🔹 [Step 2] Querying RAG Knowledge Base...")
@@ -106,17 +117,17 @@ suspend fun executeReviewPipeline(
         Analyze the provided Git Diff against the provided Documentation Context.
         
         STRICT REQUIREMENT:
-        If you find a violation of a rule found in the Context:
-        1. Quote the rule ID and Description.
-        2. Cite the source document name.
-        3. Point to the specific line in the diff.
+        1. If you find a violation of a rule found in the Context, you MUST cite the source document.
+        2. Format citations as [Source: filename.md].
+        3. Quote the specific Rule ID if available (e.g., LOG-001).
         
-        Format:
+        Format your response as follows:
+        
         ## 🚨 Violations Found
         
         ### [Rule ID] Rule Name
-        **Source:** `Filename.md`
-        **Violation:** Description of what is wrong.
+        **Source:** `Filename.md` (or relevant code file)
+        **Violation:** <Description of what is wrong>
         **Fix:**
         ```kotlin
         // Correct code
@@ -126,7 +137,7 @@ suspend fun executeReviewPipeline(
     """.trimIndent()
 
     val userPrompt = """
-        ### 📚 Documentation Context (Ground Truth):
+        ### 📚 Documentation & Code Context (RAG):
         $ragContext
         
         ### 📝 Code Changes (Git Diff):
@@ -134,7 +145,7 @@ suspend fun executeReviewPipeline(
         $diff
         ```
         
-        Analyze now.
+        Analyze now. Remember to cite your sources!
     """.trimIndent()
 
     val review = gptClient.chat(systemPrompt, userPrompt, model = "yandexgpt")
