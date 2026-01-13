@@ -1,88 +1,102 @@
-# 🎄 AI Advent Challenge - Day 20: Developer Assistant (RAG + MCP)
+# 🎄 AI Advent Challenge: Day 21 - AI Code Reviewer
 
-Это финальная версия AI-ассистента для разработчиков, объединяющая **RAG (Retrieval-Augmented Generation)** для работы с документацией и **MCP (Model Context Protocol)** для управления окружением.
+Автоматический AI-агент для ревью кода, построенный на базе **MCP** (Model Context Protocol) и **RAG** (Retrieval Augmented Generation). Агент анализирует изменения в коде (локальные или PR на GitHub), сверяет их с документацией проекта и стандартами кодирования, и выдает структурированный отчет с замечаниями.
 
-Ассистент умеет не только выполнять задачи (запуск эмулятора, проверка крипты), но и отвечать на вопросы по коду проекта, понимая текущий контекст Git.
+---
 
-## 🌟 Новые возможности (Day 20)
+## 🚀 Основные возможности
 
-### 🧠 Developer Assistant (RAG + Git)
-Ассистент проиндексировал код проекта и документацию. Теперь он знает:
-- Как работает архитектура проекта.
-- В какой ветке вы находитесь.
-- Какие файлы были изменены.
+*   **Гибридный пайплайн**: Объединяет Git-инструменты, RAG-поиск и LLM анализ.
+*   **Два режима работы**:
+    *   🕵️ **Local Review**: Анализ незакоммиченных изменений (`git diff`) в текущей директории.
+    *   🌐 **Remote PR Review**: Анализ Pull Request-ов с GitHub по URL.
+*   **Умный RAG**:
+    *   Индексирует не только документацию (`docs/`), но и кодовую базу (`src/`).
+    *   Динамически подбирает контекст на основе ключевых слов из diff-а.
+*   **Strict Policy Checking**:
+    *   Агент обучен ссылаться на конкретные пункты правил (Rule ID) из документации.
+    *   Указывает файл и **строки** источника правил при обнаружении нарушений.
 
-**Команды:**
-- `/help` — показать краткую сводку (README summary + git status).
-- `/help <вопрос>` — найти ответ в документации и коде (например: `/help как добавить новый MCP tool?`).
+---
 
-### 🤖 Android Environment MCP (Day 15)
-Полное управление Android-разработкой через AI:
-- `start_emulator` / `wait_for_device` — запуск AVD.
-- `install_apk` — установка с флагом reinstall.
-- `start_app` — запуск приложения.
-- `list_devices`, `get_logcat` — диагностика.
+## 🛠 Архитектура
 
-## 🏗 Архитектура MCP
+Проект реализован на **Kotlin** и состоит из следующих компонентов:
 
-Система оркестрирует **6 независимых MCP серверов**:
+1.  **MCP Server (`DeveloperAssistantMCPServer`)**:
+    *   Центральный узел, предоставляющий инструменты для агента.
+    *   `get_pr_diff` / `fetch_github_pr_diff`: Получение изменений кода.
+    *   `ask_project_docs`: Интерфейс к RAG-системе.
 
-1.  **DeveloperAssistantMCPServer** (Kotlin, In-Process) 🆕
-    *   *Role:* Знания о проекте и Git.
-    *   *Tools:* `ask_project_docs`, `git_status`, `help_overview`.
-2.  **AndroidEnvironmentMCPServer** (Kotlin, In-Process)
-    *   *Role:* Управление Android SDK/ADB.
-3.  **CryptoCurrencyMCPServer** (Kotlin, In-Process)
-    *   *Role:* Данные о криптовалютах (CoinCap API).
-4.  **SummarizationMCPServer** (Kotlin, In-Process)
-    *   *Role:* Форматирование данных в отчеты.
-5.  **ReminderMCPServer** (Kotlin, In-Process)
-    *   *Role:* Управление напоминаниями (CRON).
-6.  **Filesystem Server** (Node.js, External Process)
-    *   *Role:* Запись файлов в папку `mcp-output/`.
+2.  **RAG System (`ru.skokova.aiadventchallenge.rag`)**:
+    *   **Indexer**: Сканирует `.md` и `.kt` файлы, разбивает на чанки.
+    *   **Vector Search**: Использует Yandex Embeddings для поиска релевантных правил.
 
-## 🚀 Как запустить
+3.  **AI Integration (`YandexGPTClient`)**:
+    *   Прямая интеграция с Yandex Cloud (YandexGPT Pro).
+    *   Специализированный системный промпт для роли "Senior Kotlin Reviewer".
 
-### Предварительные требования
-*   JDK 17+
-*   Node.js (для Filesystem MCP)
-*   Android SDK (для Android MCP)
-*   Git (установлен и доступен в PATH)
+---
 
-### Настройка ключей
-Создайте файл `local.properties` в корне проекта (или используйте ENV переменные):
+## ⚙️ Настройка
+
+Для работы требуются ключи API. Создайте файл `local.properties` в корне проекта (или используйте переменные окружения):
 
 ```properties
-yandex.api.key=<ваш_api_ключ>
-yandex.folder.id=<ваш_folder_id>
-coincap.api.key=<опционально>
+# Yandex Cloud (Required for LLM & Embeddings)
+YANDEX_API_KEY=your_yandex_api_key
+YANDEX_FOLDER_ID=your_folder_id
+
+# GitHub (Required only for Remote PR Review)
+GITHUB_TOKEN=your_github_token
 ```
 
-### Запуск
+---
+
+## ▶️ Запуск и Использование
+
+### 1. Индексация (Подготовка)
+Перед первым запуском необходимо проиндексировать документацию и код, чтобы агент "выучил" правила:
+
 ```bash
-./gradlew run
+./gradlew run --args="index"
+```
+*Сканирует папки `docs/` и `src/main/kotlin`, создаёт файл `rag_index.json`.*
+
+### 2. Локальное ревью (Local Diff)
+Анализирует текущие изменения в рабочей директории (то, что покажет `git diff`):
+
+```bash
+./gradlew run --args="review"
 ```
 
-## 💬 Примеры сценариев
+### 3. Ревью Pull Request (GitHub)
+Анализирует внешний PR по ссылке:
 
-**1. Исследование проекта:**
-> /help
-*(Покажет описание проекта, текущую ветку и измененные файлы)*
+```bash
+./gradlew run --args="review_pr https://github.com/VeraSkokova/AI-Advent-Challenge-MCP/pull/1"
+```
 
-> /help где находится логика обработки команд?
-*(Найдет ответ в коде через RAG)*
+---
 
-**2. Android разработка:**
-> Запусти эмулятор Pixel_5 и установи приложение app-debug.apk
-*(Агент запустит эмулятор, дождется загрузки, установит APK и запустит его)*
+## 📂 Структура реализации (Day 21)
 
-**3. Крипто-отчет:**
-> Проверь курс BTC, сделай саммари и сохрани в файл report.txt
-*(Crypto -> Summarization -> Filesystem pipeline)*
+*   `src/main/kotlin/ru/skokova/aiadventchallenge/Main.kt` — Точка входа, реализация CLI пайплайна.
+*   `src/main/kotlin/ru/skokova/aiadventchallenge/mcp/DeveloperAssistantMCPServer.kt` — Локальный MCP сервер с инструментами.
+*   `src/main/kotlin/ru/skokova/aiadventchallenge/git/GitHubClient.kt` — Клиент для получения raw diff с GitHub.
+*   `docs/Documentation.md` — Пример документации со стандартами кодирования (для тестирования RAG).
 
-## 🛠 Стек технологий
-*   **Kotlin**
-*   **Model Context Protocol (MCP)**
-*   **YandexGPT** (LLM & Embeddings)
-*   **Vector Search** (Cosine Similarity)
-*   **ProcessBuilder** (Git & ADB integration)
+---
+
+### Пример отчета агента:
+
+```markdown
+## 🚨 Violations Found
+
+### [LOG-001] Logging Policy
+**Source:** `Documentation.md:5-8`
+**Violation:** The code uses `println` for logging secrets, which is strictly forbidden.
+**Fix:**
+// Use Logger instead
+logger.info("...")
+```
