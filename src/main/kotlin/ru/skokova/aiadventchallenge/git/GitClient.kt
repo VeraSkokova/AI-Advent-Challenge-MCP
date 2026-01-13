@@ -17,6 +17,10 @@ class GitClient(private val workingDir: File = File(".")) {
         if (output.isBlank()) return emptyList()
         return output.lines().filter { it.isNotBlank() }
     }
+    
+    fun getDiffContent(): String {
+        return runCommand("git diff")
+    }
 
     private fun runCommand(command: String): String {
         val parts = if (isWindows) {
@@ -31,16 +35,14 @@ class GitClient(private val workingDir: File = File(".")) {
                 .redirectErrorStream(true)
                 .start()
 
-            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+            if (!process.waitFor(10, TimeUnit.SECONDS)) { // Increased timeout for potentially large diffs
                 process.destroy()
                 throw RuntimeException("Command timed out: $command")
             }
 
             val output = process.inputStream.bufferedReader().readText()
             if (process.exitValue() != 0) {
-                // Если это не критичная ошибка (например, пустой diff), можно логировать
                 logger.warn("Git command '$command' returned non-zero exit code. Output: $output")
-                // Для status/branch лучше вернуть ошибку, для diff может быть пусто
                 if (output.isBlank()) return ""
                 return "Error: $output" 
             }
