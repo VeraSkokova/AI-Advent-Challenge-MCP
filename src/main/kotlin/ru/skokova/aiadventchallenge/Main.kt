@@ -2,7 +2,7 @@ package ru.skokova.aiadventchallenge
 
 import ru.skokova.aiadventchallenge.mcp.DeveloperAssistantMCPServer
 import ru.skokova.aiadventchallenge.mcp.FilesystemMCPClient
-import ru.skokova.aiadventchallenge.ai.YandexAIAgent
+import ru.skokova.aiadventchallenge.ai.YandexGPTClient
 import ru.skokova.aiadventchallenge.git.GitClient
 import ru.skokova.aiadventchallenge.rag.services.IndexService
 import ru.skokova.aiadventchallenge.rag.services.SearchService
@@ -14,10 +14,19 @@ fun main() = runBlocking {
     val logger = LoggerFactory.getLogger("Main")
     val projectRoot = File(".")
     
+    // 0. Environment Check
+    val apiKey = System.getenv("YANDEX_API_KEY")
+    val folderId = System.getenv("YANDEX_FOLDER_ID")
+    if (apiKey.isNullOrBlank() || folderId.isNullOrBlank()) {
+        logger.error("❌ YANDEX_API_KEY and YANDEX_FOLDER_ID environment variables must be set.")
+        return@runBlocking
+    }
+    
     // 1. Initialize Components
     val gitClient = GitClient(projectRoot)
     val indexService = IndexService()
     val searchService = SearchService()
+    val gptClient = YandexGPTClient(apiKey, folderId)
     
     val mcpServer = DeveloperAssistantMCPServer(
         indexService = indexService,
@@ -26,18 +35,13 @@ fun main() = runBlocking {
         projectRoot = projectRoot
     )
     
-    // Assuming YandexAIAgent takes a system prompt in constructor or methods
-    // NOTE: This assumes YandexAIAgent is compatible. If not, we might need to adjust instantiation.
-    // Based on previous files, it seems to take API key from env or similar.
-    val aiAgent = YandexAIAgent() 
-
     logger.info("🤖 AI Code Review Assistant Started")
 
     // 2. Get Diff (MCP Tool)
     logger.info("📄 Fetching git diff...")
     val diff = mcpServer.executeTool("get_pr_diff", emptyMap())
     
-    if (diff.startsWith("No changes")) {
+    if (diff.startsWith("No changes") || diff.isBlank()) {
         println("✅ No changes to review.")
         return@runBlocking
     }
@@ -45,43 +49,65 @@ fun main() = runBlocking {
     logger.info("🔍 Diff size: ${diff.length} chars")
 
     // 3. Extract Keywords & Get RAG Context
-    // Simple keyword extraction: find distinct words starting with capital letters or ending with .kt
+    // Extract CamelCase words (classes) and .kt filenames to find relevant docs
     val keywords = Regex("""\b([A-Z][a-zA-Z0-9]+)\b|\b([a-zA-Z0-9]+\.kt)\b""")
         .findAll(diff)
         .map { it.value }
         .distinct()
-        .take(5) // Take top 5 keywords to avoid spamming RAG
+        .filter { it.length > 3 } // Filter out short words
+        .take(5) // Limit context search
         .joinToString(" ")
         
     logger.info("📚 Searching RAG context for keywords: $keywords")
     val ragContext = if (keywords.isNotEmpty()) {
-         mcpServer.executeTool("ask_project_docs", mapOf("query" to "Review rules and architecture for: $keywords"))
+         mcpServer.executeTool("ask_project_docs", mapOf("query" to "Review rules and architecture related to: $keywords"))
     } else {
-        "No specific RAG context found."
+        "No specific keywords found for RAG context."
     }
 
     // 4. Construct Prompt
-    val prompt = """
-        You are a Senior Kotlin Developer doing a Code Review.
+    val systemPrompt = """
+        Ты - Senior Kotlin Developer и техлид проекта.
+        Твоя задача: провести Code Review изменений в репозитории.
         
-        ### Context from Project Docs (RAG):
+        Используй следующие критерии:
+        1. Clean Architecture и SOLID.
+        2. Kotlin Code Conventions (naming, null-safety).
+        3. Обработка ошибок (try-catch, Result, logging).
+        4. Отсутствие hardcoded значений.
+        5. Читаемость и поддерживаемость.
+        
+        Формат ответа (Markdown):
+        ## Summary
+        Краткое описание изменений (1-2 предложения).
+        
+        ## Code Review
+        Список замечаний. Для каждого замечания укажи:
+        - 🔴 Critical / 🟡 Warning / 🟢 Info
+        - Файл (если понятно из диффа)
+        - Суть проблемы
+        - Пример улучшения (код)
+        
+        ## Verdict
+        APPROVE / REQUEST CHANGES
+    """.trimIndent()
+
+    val userPrompt = """
+        ### Context from Documentation/Codebase (RAG):
         $ragContext
         
-        ### Git Diff to Review:
+        ### Changes (Git Diff):
         ```diff
         $diff
         ```
         
-        Analyze the code for bugs, architectural issues, and style violations.
-        Provide the output in Markdown format.
+        Review this code.
     """.trimIndent()
 
     // 5. Generate Review
-    logger.info("🧠 Generating review...")
-    val review = aiAgent.generateContent(
-        systemPrompt = "You are an expert code reviewer. Be constructive and concise.",
-        userPrompt = prompt
-    )
+    logger.info("🧠 Generating review with YandexGPT...")
+    // Use 'yandexgpt' (pro) model for better reasoning on code
+    val review = gptClient.chat(systemPrompt, userPrompt, model = "yandexgpt")
 
     // 6. Output
     println("\n" + "=" * 20 + " AI Code Review " + "=" * 20)
