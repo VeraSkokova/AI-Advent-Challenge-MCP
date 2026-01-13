@@ -60,6 +60,16 @@ class DeveloperAssistantMCPServer(
                 name = "git_current_branch",
                 description = "Узнать название текущей git ветки",
                 parameters = listOf()
+            ),
+            ToolInfo(
+                name = "get_pr_diff",
+                description = "Получить полный diff изменений для ревью. Используй для анализа кода перед коммитом.",
+                parameters = listOf()
+            ),
+             ToolInfo(
+                name = "read_file",
+                description = "Прочитать содержимое файла. Используй, если контекста из diff недостаточно или RAG предложил посмотреть файл.",
+                parameters = listOf("path")
             )
         )
     }
@@ -86,6 +96,13 @@ class DeveloperAssistantMCPServer(
             }
             "git_current_branch" -> {
                 gitClient.currentBranch()
+            }
+            "get_pr_diff" -> {
+                gitClient.getDiffContent().ifEmpty { "No changes detected in git diff." }
+            }
+            "read_file" -> {
+                val path = params["path"] as? String ?: return "Error: 'path' parameter required"
+                handleReadFile(path)
             }
             else -> "Error: Unknown tool $toolName"
         }
@@ -159,6 +176,24 @@ class DeveloperAssistantMCPServer(
         } catch (e: Exception) {
             logger.error("❌ Failed to rebuild index", e)
             "Error rebuilding index: ${e.message}"
+        }
+    }
+    
+    private fun handleReadFile(path: String): String {
+        val file = File(projectRoot, path)
+        if (!file.exists()) return "Error: File '$path' not found"
+        if (!file.isFile) return "Error: '$path' is not a file"
+        
+        return try {
+            // Ограничиваем размер файла для чтения, чтобы не забить контекст
+            val text = file.readText()
+            if (text.length > 10000) {
+                 text.take(10000) + "\n... (File truncated, original size: ${text.length} chars)"
+            } else {
+                text
+            }
+        } catch (e: Exception) {
+            "Error reading file: ${e.message}"
         }
     }
 }
