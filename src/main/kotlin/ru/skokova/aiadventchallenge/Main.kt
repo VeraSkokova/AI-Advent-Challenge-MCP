@@ -86,11 +86,9 @@ suspend fun executeReviewPipeline(
     logger.info("   Diff found: ${diff.length} chars")
 
     // Pipeline Step 2: Context Retrieval (RAG)
-    // We specifically look for policy violations keywords in diff to match docs
     val keywords = listOf("println", "System.out", "TODO", "catch", "Exception", "key", "token", "password")
     val diffKeywords = keywords.filter { diff.contains(it) }.joinToString(" ")
     
-    // Also include class names from the diff to find relevant code
     val classNames = Regex("""class\s+([A-Z][a-zA-Z0-9]+)""")
         .findAll(diff)
         .map { it.groupValues[1] }
@@ -117,8 +115,8 @@ suspend fun executeReviewPipeline(
         Analyze the provided Git Diff against the provided Documentation Context.
         
         STRICT REQUIREMENT:
-        1. If you find a violation of a rule found in the Context, you MUST cite the source document.
-        2. Format citations as [Source: filename.md].
+        1. If you find a violation of a rule found in the Context, you MUST cite the source document AND the line numbers.
+        2. The Context provided includes line numbers (e.g. Filename.md:10-15). You MUST include these in your citation.
         3. Quote the specific Rule ID if available (e.g., LOG-001).
         
         Format your response as follows:
@@ -126,7 +124,7 @@ suspend fun executeReviewPipeline(
         ## 🚨 Violations Found
         
         ### [Rule ID] Rule Name
-        **Source:** `Filename.md` (or relevant code file)
+        **Source:** `Filename.md:StartLine-EndLine`
         **Violation:** <Description of what is wrong>
         **Fix:**
         ```kotlin
@@ -145,7 +143,7 @@ suspend fun executeReviewPipeline(
         $diff
         ```
         
-        Analyze now. Remember to cite your sources!
+        Analyze now. Remember to cite your sources with line numbers!
     """.trimIndent()
 
     val review = gptClient.chat(systemPrompt, userPrompt, model = "yandexgpt")
