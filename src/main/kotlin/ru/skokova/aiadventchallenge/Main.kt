@@ -1,119 +1,90 @@
 package ru.skokova.aiadventchallenge
 
-import kotlinx.coroutines.runBlocking
+import ru.skokova.aiadventchallenge.mcp.DeveloperAssistantMCPServer
+import ru.skokova.aiadventchallenge.mcp.FilesystemMCPClient
 import ru.skokova.aiadventchallenge.ai.YandexAIAgent
-import ru.skokova.aiadventchallenge.ai.YandexGPTClient
-import ru.skokova.aiadventchallenge.coincap.CoinCapClient
 import ru.skokova.aiadventchallenge.git.GitClient
-import ru.skokova.aiadventchallenge.mcp.*
-import ru.skokova.aiadventchallenge.rag.client.YandexEmbeddingClient
 import ru.skokova.aiadventchallenge.rag.services.IndexService
 import ru.skokova.aiadventchallenge.rag.services.SearchService
-import ru.skokova.aiadventchallenge.rag.services.TextChunker
-import ru.skokova.aiadventchallenge.storage.ReminderStorage
-import ru.skokova.aiadventchallenge.utils.AdbManager
-import ru.skokova.aiadventchallenge.utils.loadProperties
+import kotlinx.coroutines.runBlocking
 import java.io.File
-import java.util.Properties
-import java.util.Scanner
+import org.slf4j.LoggerFactory
 
 fun main() = runBlocking {
-    // 0. Загружаем local.properties (если есть)
-    val properties = loadProperties()
-
-    // 1. Загрузка конфигурации
-    val yandexKey = getEnvOrProperty("YANDEX_API_KEY", properties)
-    val folderId = getEnvOrProperty("YANDEX_FOLDER_ID", properties)
-
-    val coinCapKey = try {
-        getEnvOrProperty("COINCAP_API_KEY", properties)
-    } catch (e: Exception) {
-        null
-    }
-
-    // 2. Инициализация клиентов и хранилищ
-    val coinCapClient = CoinCapClient(apiKey = coinCapKey)
-    val storage = ReminderStorage(File("reminders.json"))
-    val yandexGPTClient = YandexGPTClient(yandexKey, folderId)
-
-    // 3. Инициализация MCP серверов
-    val reminderServer = ReminderMCPServer(storage)
-    val cryptoServer = CryptoCurrencyMCPServer(coinCapClient)
-    val summarizationServer = SummarizationMCPServer()
-    val filesystemClient = FilesystemMCPClient()
+    val logger = LoggerFactory.getLogger("Main")
+    val projectRoot = File(".")
     
-    // 4. Day 15: Android Environment MCP Server
-    val adbManager = AdbManager()
-    val androidEnvServer = AndroidEnvironmentMCPServer(adbManager)
+    // 1. Initialize Components
+    val gitClient = GitClient(projectRoot)
+    val indexService = IndexService()
+    val searchService = SearchService()
     
-    // 5. Day 20: Developer Assistant MCP Server (RAG + Git)
-    val yandexEmbeddingClient = YandexEmbeddingClient(yandexKey, folderId)
-    val textChunker = TextChunker()
-    val indexService = IndexService(yandexEmbeddingClient, textChunker)
-    val searchService = SearchService(yandexEmbeddingClient)
-    val gitClient = GitClient(File("."))
-    val developerAssistantServer = DeveloperAssistantMCPServer(
+    val mcpServer = DeveloperAssistantMCPServer(
         indexService = indexService,
         searchService = searchService,
         gitClient = gitClient,
-        projectRoot = File(".")
+        projectRoot = projectRoot
     )
-
-    // 6. Агент с поддержкой всех серверов
-    val agent = YandexAIAgent(
-        apiKey = yandexKey,
-        folderId = folderId,
-        reminderMcpServer = reminderServer,
-        cryptoCurrencyMcpServer = cryptoServer,
-        summarizationMcpServer = summarizationServer,
-        filesystemClient = filesystemClient,
-        androidEnvironmentMcpServer = androidEnvServer,
-        developerAssistantMcpServer = developerAssistantServer,
-        yandexGPTClient = yandexGPTClient
-    )
-
-    // 7. Интерактивный режим
-    val scanner = Scanner(System.`in`)
-
-    println("\n" + "=".repeat(60))
-    println("🚀 AI Agent ready!")
-    println("=".repeat(60))
-    println("CoinCap API: ${if (coinCapKey != null) "✅ Connected" else "❌ Not configured"}")
-    println("Android Environment MCP: ✅ Enabled")
-    println("Developer Assistant (RAG + Git): ✅ Enabled")
-    println("\n💬 Type 'exit' to quit")
-    println("💡 Try: /help - to get project overview")
-    println("=".repeat(60))
     
-    while (true) {
-        print("\n> ")
-        if (!scanner.hasNextLine()) break
-        val input = scanner.nextLine()
-        if (input.lowercase() == "exit") break
+    // Assuming YandexAIAgent takes a system prompt in constructor or methods
+    // NOTE: This assumes YandexAIAgent is compatible. If not, we might need to adjust instantiation.
+    // Based on previous files, it seems to take API key from env or similar.
+    val aiAgent = YandexAIAgent() 
 
-        try {
-            val response = agent.executeCommand(input)
-            println("\n🤖 ${response.summary}")
-        } catch (e: Exception) {
-            println("❌ Error: ${e.message}")
-        }
+    logger.info("🤖 AI Code Review Assistant Started")
+
+    // 2. Get Diff (MCP Tool)
+    logger.info("📄 Fetching git diff...")
+    val diff = mcpServer.executeTool("get_pr_diff", emptyMap())
+    
+    if (diff.startsWith("No changes")) {
+        println("✅ No changes to review.")
+        return@runBlocking
+    }
+    
+    logger.info("🔍 Diff size: ${diff.length} chars")
+
+    // 3. Extract Keywords & Get RAG Context
+    // Simple keyword extraction: find distinct words starting with capital letters or ending with .kt
+    val keywords = Regex("""\b([A-Z][a-zA-Z0-9]+)\b|\b([a-zA-Z0-9]+\.kt)\b""")
+        .findAll(diff)
+        .map { it.value }
+        .distinct()
+        .take(5) // Take top 5 keywords to avoid spamming RAG
+        .joinToString(" ")
+        
+    logger.info("📚 Searching RAG context for keywords: $keywords")
+    val ragContext = if (keywords.isNotEmpty()) {
+         mcpServer.executeTool("ask_project_docs", mapOf("query" to "Review rules and architecture for: $keywords"))
+    } else {
+        "No specific RAG context found."
     }
 
-    filesystemClient.shutdown()
-}
+    // 4. Construct Prompt
+    val prompt = """
+        You are a Senior Kotlin Developer doing a Code Review.
+        
+        ### Context from Project Docs (RAG):
+        $ragContext
+        
+        ### Git Diff to Review:
+        ```diff
+        $diff
+        ```
+        
+        Analyze the code for bugs, architectural issues, and style violations.
+        Provide the output in Markdown format.
+    """.trimIndent()
 
-/**
- * Получение значения из ENV или properties файла
- */
-fun getEnvOrProperty(key: String, properties: Properties?): String {
-    // 1. Ищем в ENV (приоритет)
-    val envValue = System.getenv(key)
-    if (!envValue.isNullOrBlank()) return envValue
+    // 5. Generate Review
+    logger.info("🧠 Generating review...")
+    val review = aiAgent.generateContent(
+        systemPrompt = "You are an expert code reviewer. Be constructive and concise.",
+        userPrompt = prompt
+    )
 
-    // 2. Ищем в properties файле
-    val propValue = properties?.getProperty(key)
-    if (!propValue.isNullOrBlank()) return propValue
-
-    // 3. Падаем, если не нашли
-    throw IllegalStateException("Missing configuration: $key. Please set it in ENV or local.properties")
+    // 6. Output
+    println("\n" + "=" * 20 + " AI Code Review " + "=" * 20)
+    println(review)
+    println("=" * 56)
 }
