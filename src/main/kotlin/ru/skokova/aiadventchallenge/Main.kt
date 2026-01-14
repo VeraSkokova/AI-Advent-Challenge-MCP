@@ -138,8 +138,14 @@ suspend fun runSupportChat(
         if (input.isBlank()) continue
 
         // 4. RAG Search
-        // Search docs based on user query + technical context from CRM (e.g. OS, IDE)
         val ragContext = devMcp.executeTool("ask_project_docs", mapOf("query" to input))
+        
+        // Debug logging to see what RAG found
+        if (ragContext.startsWith("No relevant information")) {
+             logger.info("⚠️ RAG found nothing for: '$input'")
+        } else {
+             logger.info("✅ RAG Context found (first 100 chars): ${ragContext.take(100)}...")
+        }
 
         // 5. Generate Answer
         val systemPrompt = """
@@ -175,7 +181,6 @@ suspend fun executeReviewAnalysis(
     mcpServer: DeveloperAssistantMCPServer,
     gptClient: YandexGPTClient
 ) {
-     // ... copied from previous revision to maintain functionality ...
     if (diff.startsWith("No changes") || diff.isBlank() || diff.startsWith("Error")) {
         logger.info("⚠️ Review aborted. Reason: $diff")
         return
