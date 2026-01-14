@@ -1,0 +1,32 @@
+[
+  {
+    "id": "user_dev",
+    "name": "Alex Developer",
+    "plan": "PRO",
+    "environment": {
+      "os": "MacOS Sonoma",
+      "ide": "IntelliJ IDEA 2025.1",
+      "java_version": "21",
+      "plugin_version": "1.0.5"
+    },
+    "history": [
+      {
+        "date": "2026-01-10",
+        "issue": "Index rebuild failed",
+        "status": "RESOLVED"
+      }
+    ]
+  },
+  {
+    "id": "user_newbie",
+    "name": "John Doe",
+    "plan": "FREE",
+    "environment": {
+      "os": "Windows 11",
+      "ide": "VS Code",
+      "java_version": "11",
+      "plugin_version": "0.9.0"
+    },
+    "history": []
+  }
+]
