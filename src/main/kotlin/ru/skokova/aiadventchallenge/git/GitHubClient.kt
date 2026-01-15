@@ -5,9 +5,11 @@ import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
+import io.ktor.client.plugins.contentnegotiation.*
 
 @Serializable
 data class GitHubIssue(
@@ -28,7 +30,7 @@ data class CreateIssueRequest(val title: String, val body: String?, val labels: 
 class GitHubClient(private val token: String?) {
     private val logger = LoggerFactory.getLogger(GitHubClient::class.java)
     private val client = HttpClient(CIO) {
-        install(io.ktor.client.plugins.contentnegotiation.ContentNegotiation) {
+        install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
         }
     }
