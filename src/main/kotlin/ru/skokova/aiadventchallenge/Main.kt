@@ -52,12 +52,14 @@ fun main(args: Array<String>) = runBlocking {
     )
     val supportMcpServer = SupportMCPServer(File(projectRoot, "crm/users.json"))
     
-    // We assume the repo is the one we are running in, or configurable
-    // For now, let's hardcode for demo purposes or parse from remote url
-    val remoteUrl = gitClient.getRemoteUrl() // You might need to implement this in GitClient or hardcode
-    // Fallback parsing for demo:
-    val repoOwner = "VeraSkokova" 
-    val repoName = "AI-Advent-Challenge-MCP"
+    // Auto-detect repo for management
+    val remoteUrl = try { gitClient.getRemoteUrl() } catch (e: Exception) { "" }
+    val (repoOwner, repoName) = if (remoteUrl.contains("github.com")) {
+        val parts = remoteUrl.split("github.com/").last().split("/")
+        parts[0] to parts[1]
+    } else {
+        "VeraSkokova" to "AI-Advent-Challenge-MCP" // Fallback
+    }
     
     val manageMcpServer = ManageMCPServer(githubClient, repoOwner, repoName)
     
@@ -66,7 +68,6 @@ fun main(args: Array<String>) = runBlocking {
     
     when {
         command == "index" -> {
-             // ... existing index logic ...
             logger.info("📚 Building RAG Index...")
             val paths = listOf(File(projectRoot, "docs").absolutePath, File(projectRoot, "src/main/kotlin").absolutePath)
             val index = indexService.createIndex(paths)
@@ -74,12 +75,10 @@ fun main(args: Array<String>) = runBlocking {
             logger.info("✅ Indexing complete.")
         }
         command == "review" -> {
-            // ... existing review logic ...
              val diff = mcpServer.executeTool("get_pr_diff", emptyMap())
              executeReviewAnalysis(logger, diff, mcpServer, gptClient)
         }
         command.startsWith("review_pr") -> {
-            // ... existing PR logic ...
             val url = args.getOrNull(1) ?: return@runBlocking logger.error("Usage: review_pr <url>")
             val regex = Regex("""github\.com/([^/]+)/([^/]+)/pull/(\d+)""")
             val match = regex.find(url) ?: return@runBlocking logger.error("Invalid URL")
@@ -92,6 +91,7 @@ fun main(args: Array<String>) = runBlocking {
             runSupportChat(userId, supportMcpServer, mcpServer, gptClient, logger)
         }
         command == "manage" -> {
+            logger.info("Starting Manager for $repoOwner/$repoName")
             runManageChat(manageMcpServer, mcpServer, gptClient, logger)
         }
         else -> {
@@ -118,24 +118,33 @@ suspend fun runManageChat(
         if (input.lowercase() == "exit") break
         if (input.isBlank()) continue
 
+        val inputLow = input.lowercase()
+
         // 1. Check if we need real-time project data
-        // Heuristic: if user asks about status, tasks, issues, priority -> fetch status
+        // Extended heuristics for Russian support
         var projectContext = ""
-        if (input.contains("status") || input.contains("task") || input.contains("issue") || input.contains("priority") || input.contains("what")) {
+        if (inputLow.contains("status") || inputLow.contains("статус") ||
+            inputLow.contains("task") || inputLow.contains("задач") ||
+            inputLow.contains("issue") || 
+            inputLow.contains("priority") || inputLow.contains("приоритет") ||
+            inputLow.contains("what") || inputLow.contains("что") ||
+            inputLow.contains("work") || inputLow.contains("работ")
+        ) {
             logger.info("📊 Fetching project status from GitHub...")
             projectContext = manageMcp.executeTool("get_project_status", emptyMap())
         }
         
         // 2. Check if we need RAG (docs)
-        // Heuristic: if user asks "how to", "policy", "rule" -> fetch docs
         var ragContext = ""
-        if (input.contains("how") || input.contains("policy") || input.contains("rule") || input.contains("standard")) {
+        if (inputLow.contains("how") || inputLow.contains("как") ||
+            inputLow.contains("policy") || inputLow.contains("политик") ||
+            inputLow.contains("rule") || inputLow.contains("правил") ||
+            inputLow.contains("standard") || inputLow.contains("стандарт")
+        ) {
              ragContext = devMcp.executeTool("ask_project_docs", mapOf("query" to input))
         }
 
         // 3. LLM Decision / Tool Call
-        // We use a simplified ReAct-like loop here: LLM decides if it needs to CREATE a task based on input
-        
         val systemPrompt = """
             You are an AI Team Lead and Project Manager.
             
@@ -165,7 +174,6 @@ suspend fun runManageChat(
         if (response.trim().startsWith("{") && response.contains("create_task")) {
             try {
                 // Manual JSON parsing for demo simplicity
-                // In prod, use a proper parser
                 val titleMatch = Regex(""""title":\s*"(.*?)"""").find(response)
                 val descMatch = Regex(""""description":\s*"(.*?)"""").find(response)
                 val prioMatch = Regex(""""priority":\s*"(.*?)"""").find(response)
@@ -184,10 +192,8 @@ suspend fun runManageChat(
                 
             } catch (e: Exception) {
                 println("❌ Failed to parse task creation intent: ${e.message}")
-                println("Raw LLM response: $response")
             }
         } else {
-            // Normal text response
             println("🤖 Bot: $response\n")
         }
     }
@@ -201,12 +207,7 @@ suspend fun runSupportChat(
     gptClient: YandexGPTClient,
     logger: org.slf4j.Logger
 ) {
-    // ... (same as previous commit)
-    // To save tokens, I'm not re-pasting the full body, but in real applied patch it exists.
-    // For this MCP tool, assume the previous implementation remains unless overwritten.
-    // Re-declaring it here empty for compilation in this snippet context is wrong, 
-    // so I will paste the full content of Main.kt to be safe.
-     val scanner = Scanner(System.`in`)
+    val scanner = Scanner(System.`in`)
     var userId = userIdArg
 
     println("\n💬 Welcome to AI Support Chat!")
