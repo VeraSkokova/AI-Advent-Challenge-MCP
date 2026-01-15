@@ -1,81 +1,60 @@
-# 🎄 AI Advent Challenge: Day 22 - AI Support Assistant
+# AI Advent Challenge - MCP Server 🚀
 
-Интеллектуальный ассистент технической поддержки, который объединяет знания из документации (RAG) с контекстом клиента из CRM (MCP).
+This repository implements a Model Context Protocol (MCP) server for the AI Advent Challenge.
+It acts as a bridge between LLMs (like YandexGPT) and project tools (GitHub, Documentation/RAG, CRM).
 
----
+## 🔥 Features
 
-## 🚀 Новые возможности (Day 22)
+- **AI Code Reviewer**: Analyzes Pull Requests for style violations using RAG.
+- **AI Support Agent**: Chatbot with access to CRM data (user history) and documentation.
+- **AI Team Manager**: An autonomous agent that can manage the project (check status, create tasks).
+- **RAG System**: Uses Yandex Embeddings to index and search project documentation.
 
-*   **🛒 CRM Integration**: Агент "знает", с кем общается.
-    *   Считывает профиль пользователя: тариф (PRO/FREE), ОС, IDE, история обращений.
-    *   Персонализирует ответы (например, учитывает операционную систему пользователя при советах).
-    *   Реализует сценарии Upsell: если пользователь на бесплатном тарифе спрашивает про PRO-функции, агент предложит обновление.
-*   **📚 RAG Knowledge Base**:
-    *   Отвечает на вопросы по продукту, используя обновленный `docs/UserFAQ.md`.
-    *   Поддерживает мультиязычный поиск (добавлены ключевые слова на русском).
-*   **💬 Interactive Chat**:
-    *   Режим живого диалога в консоли (REPL).
-    *   Автоматический подбор контекста из базы знаний под каждый вопрос.
+## 🛠️ Usage
 
----
+### Prerequisites
+1. **Yandex Cloud API Key**: Set `YANDEX_API_KEY` and `YANDEX_FOLDER_ID` in `local.properties` or env vars.
+2. **GitHub Token**: Set `GITHUB_TOKEN` (needs repo read/write permissions).
 
-## 🛠 Архитектура
+### Commands
 
-1.  **Support MCP Server**:
-    *   Интеграция с локальной "CRM" (файл `crm/users.json`).
-    *   Инструменты: `get_user_details`, `get_user_history`.
-2.  **RAG System**:
-    *   Индексирует `docs/UserFAQ.md` для поиска ответов на частые вопросы.
-3.  **Main Pipeline**:
-    *   Комбинирует три источника контекста в один промпт для LLM:
-        1.  **CRM**: "Кто спрашивает?" (Плагин, ОС, История)
-        2.  **RAG**: "Что мы знаем об этом?" (FAQ)
-        3.  **History**: "О чем мы только что говорили?"
-
----
-
-## ▶️ Как запустить
-
-### 1. Подготовка (Индексация)
-Обязательно обновите индекс перед запуском, чтобы подгрузить новый FAQ:
-
+**1. Index Documentation (Run once)**
+Builds the vector index from `docs/` and source code.
 ```bash
 ./gradlew run --args="index"
 ```
 
-### 2. Запуск Чата Поддержки
-Запустите ассистента, указав ID пользователя (из `crm/users.json`):
-
-**Сценарий А: Опытный разработчик (PRO)**
+**2. Run AI Code Review**
+Analyzes the latest PR or a specific one.
 ```bash
-./gradlew run --args="support user_dev"
+./gradlew run --args="review"
+# OR
+./gradlew run --args="review_pr https://github.com/Owner/Repo/pull/1"
 ```
-*   **Контекст:** MacOS, IntelliJ IDEA, PRO план.
-*   **Пример вопроса:** "Как пофиксить ошибку авторизации?"
-*   **Ожидаемое поведение:** Агент даст технический совет, ссылаясь на переменные окружения.
 
-**Сценарий Б: Новичок (FREE)**
+**3. Run Support Chat**
+Simulates a support session with a specific user context.
 ```bash
-./gradlew run --args="support user_newbie"
+./gradlew run --args="support user_123"
 ```
-*   **Контекст:** Windows, VS Code, FREE план.
-*   **Пример вопроса:** "Как запустить ревью чужого PR с гитхаба?"
-*   **Ожидаемое поведение:** Агент объяснит, что эта функция доступна только в PRO версии (согласно FAQ) и предложит обновиться.
 
----
-
-## 📂 Структура данных
-
-*   `crm/users.json` — JSON-файл с данными клиентов (имитация API CRM).
-*   `docs/UserFAQ.md` — База знаний с частыми вопросами и решениями проблем.
-*   `src/main/kotlin/ru/skokova/aiadventchallenge/mcp/SupportMCPServer.kt` — Реализация MCP сервера для CRM.
-
----
-
-## 🕵️ Режим Code Review (Day 21)
-Функционал предыдущего дня (AI Code Reviewer) сохранен и доступен:
-
+**4. Run Project Manager Agent** 🆕
+Starts an interactive session where you can manage the project using natural language.
+- Ask for project status ("What are the open tasks?")
+- Ask technical questions ("What is the logging policy?") - *Uses RAG*
+- Create tasks ("Create a high priority bugfix task for login")
 ```bash
-./gradlew run --args="review"        # Локальное ревью
-./gradlew run --args="review_pr ..." # Ревью GitHub PR
+./gradlew run --args="manage"
 ```
+
+## 🏗️ Architecture
+
+- **Main.kt**: Entry point, initializes clients and routes commands.
+- **MCP Servers**:
+    - `DeveloperAssistantMCPServer`: Tools for docs (RAG) and git diffs.
+    - `SupportMCPServer`: Tools for CRM data access.
+    - `ManageMCPServer`: Tools for GitHub project management (Issues, PRs).
+- **AI Client**: `YandexGPTClient` for chat and tool execution.
+
+## 📜 Rules & Policies
+See `docs/Documentation.md` for coding standards enforced by the AI Reviewer.
