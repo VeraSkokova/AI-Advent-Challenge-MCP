@@ -112,7 +112,6 @@ suspend fun runManageChat(
     println("I can help you with Project Status, Tasks, and Priorities.")
     println("Ask me anything! (e.g. 'What is the project status?', 'Create a task for bugfix')\n")
 
-    // Context buffer to keep track of conversation/tools
     var conversationContext = ""
 
     while (true) {
@@ -123,39 +122,41 @@ suspend fun runManageChat(
 
         // ReAct Loop Prompt
         val systemPrompt = """
-            You are an AI Team Lead and Project Manager.
-            You have access to the following TOOLS:
+            You are an AI Team Lead. You have access to tools.
             
-            1. get_project_status
-               - Description: Get list of open issues and PRs.
-               - Parameters: None
-            
-            2. ask_project_docs
-               - Description: Search documentation for rules/policies (RAG).
-               - Parameters: query (string)
-            
-            3. create_task
-               - Description: Create a GitHub Issue.
-               - Parameters: title (string), description (string), priority (string: low/medium/high/critical)
+            TOOLS:
+            1. get_project_status: Get open issues/PRs.
+            2. ask_project_docs: Search docs (RAG). Params: query
+            3. create_task: Create Issue. Params: title, description, priority (low/medium/high)
             
             INSTRUCTIONS:
-            - Analyze the user request.
-            - If you need information, CALL A TOOL by outputting JSON: {"tool": "tool_name", "params": {...}}
-            - If you have enough info, answer the user normally (text).
-            - If the user asks to create a task, CALL the create_task tool.
+            - If you need a tool, output JSON: {"tool": "name", "params": {...}}
+            - If user asks to create a task, YOU MUST output the JSON for create_task.
+            - Otherwise, answer with text.
             
-            Current Conversation Context:
+            EXAMPLES:
+            User: "Check status"
+            Bot: {"tool": "get_project_status", "params": {}}
+            
+            User: "Create task 'Fix bug' with high priority"
+            Bot: {"tool": "create_task", "params": {"title": "Fix bug", "description": "Fix the bug", "priority": "high"}}
+            
+            Current Context:
             $conversationContext
         """.trimIndent()
 
         // 1. LLM Decision
         val llmResponse = gptClient.chat(systemPrompt, input, model = "yandexgpt")
         
+        // Robust JSON extraction: look for {...} block
+        val jsonMatch = Regex("""\{.*\}""", RegexOption.DOT_MATCHES_ALL).find(llmResponse)
+        
         // 2. Check for Tool Call
-        if (llmResponse.trim().startsWith("{") && llmResponse.contains("\"tool\"")) {
+        if (jsonMatch != null && llmResponse.contains("\"tool\"")) {
+            val jsonString = jsonMatch.value
             try {
-                // Basic parsing
-                val toolNameMatch = Regex(""""tool":\s*"(.*?)"""").find(llmResponse)
+                // Manual Parse
+                val toolNameMatch = Regex(""""tool":\s*"(.*?)"""").find(jsonString)
                 val toolName = toolNameMatch?.groupValues?.get(1)
                 
                 if (toolName != null) {
@@ -164,14 +165,14 @@ suspend fun runManageChat(
                     val result = when (toolName) {
                         "get_project_status" -> manageMcp.executeTool("get_project_status", emptyMap())
                         "ask_project_docs" -> {
-                             val queryMatch = Regex(""""query":\s*"(.*?)"""").find(llmResponse)
+                             val queryMatch = Regex(""""query":\s*"(.*?)"""").find(jsonString)
                              val query = queryMatch?.groupValues?.get(1) ?: input
                              devMcp.executeTool("ask_project_docs", mapOf("query" to query))
                         }
                         "create_task" -> {
-                             val titleMatch = Regex(""""title":\s*"(.*?)"""").find(llmResponse)
-                             val descMatch = Regex(""""description":\s*"(.*?)"""").find(llmResponse)
-                             val prioMatch = Regex(""""priority":\s*"(.*?)"""").find(llmResponse)
+                             val titleMatch = Regex(""""title":\s*"(.*?)"""").find(jsonString)
+                             val descMatch = Regex(""""description":\s*"(.*?)"""").find(jsonString)
+                             val prioMatch = Regex(""""priority":\s*"(.*?)"""").find(jsonString)
                              
                              manageMcp.executeTool("create_task", mapOf(
                                 "title" to (titleMatch?.groupValues?.get(1) ?: "New Task"),
@@ -184,27 +185,25 @@ suspend fun runManageChat(
                     
                     println("✅ Tool Result:\n$result\n")
                     
-                    // 3. Final Answer Generation (with tool result)
+                    // 3. Final Answer Generation
                     val finalPrompt = """
-                        The user asked: "$input"
-                        You executed tool '$toolName' and got this result:
+                        User: "$input"
+                        Tool Output:
                         $result
                         
-                        Now provide a helpful, natural response to the user summarizing this result.
+                        Summarize this for the user.
                     """.trimIndent()
                     
                     val finalResponse = gptClient.chat(systemPrompt, finalPrompt, model = "yandexgpt")
                     println("🤖 Bot: $finalResponse\n")
-                    
-                    // Update context (optional, simple version)
-                    conversationContext += "\nUser: $input\nTool: $toolName\nResult: $result\n"
+                    conversationContext += "\nUser: $input\nTool: $toolName\n"
                 }
             } catch (e: Exception) {
                 println("❌ Error executing tool plan: ${e.message}")
                 println("Raw: $llmResponse")
             }
         } else {
-            // Direct answer (no tool needed)
+            // Direct answer
             println("🤖 Bot: $llmResponse\n")
             conversationContext += "\nUser: $input\nBot: $llmResponse\n"
         }
