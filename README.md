@@ -1,60 +1,64 @@
 # AI Advent Challenge - MCP Server 🚀
 
-This repository implements a Model Context Protocol (MCP) server for the AI Advent Challenge.
-It acts as a bridge between LLMs (like YandexGPT) and project tools (GitHub, Documentation/RAG, CRM).
+Этот репозиторий реализует сервер протокола контекста модели (MCP) для AI Advent Challenge.
+Он служит мостом между LLM (например, YandexGPT) и инструментами проекта (GitHub, Документация/RAG, CRM).
 
-## 🔥 Features
+## 🔥 Возможности
 
-- **AI Code Reviewer**: Analyzes Pull Requests for style violations using RAG.
-- **AI Support Agent**: Chatbot with access to CRM data (user history) and documentation.
-- **AI Team Manager**: An autonomous agent that can manage the project (check status, create tasks).
-- **RAG System**: Uses Yandex Embeddings to index and search project documentation.
+- **AI Code Reviewer (Ревьюер кода)**: Анализирует Pull Request'ы на наличие нарушений стилей кодирования, используя базу знаний (RAG).
+- **AI Support Agent (Агент поддержки)**: Чат-бот с доступом к данным CRM (история пользователя) и технической документации.
+- **AI Team Manager (Менеджер проекта)**: Автономный агент, который помогает управлять проектом: проверяет статус, создает задачи и отвечает на технические вопросы.
+- **RAG Система**: Использует Yandex Embeddings для индексации и семантического поиска по документации проекта.
 
-## 🛠️ Usage
+## 🛠️ Использование
 
-### Prerequisites
-1. **Yandex Cloud API Key**: Set `YANDEX_API_KEY` and `YANDEX_FOLDER_ID` in `local.properties` or env vars.
-2. **GitHub Token**: Set `GITHUB_TOKEN` (needs repo read/write permissions).
+### Предварительные требования
+1. **Yandex Cloud API Key**: Установите `YANDEX_API_KEY` и `YANDEX_FOLDER_ID` в `local.properties` или переменные окружения.
+2. **GitHub Token**: Установите `GITHUB_TOKEN` (требуются права на чтение/запись репозитория).
 
-### Commands
+### Команды
 
-**1. Index Documentation (Run once)**
-Builds the vector index from `docs/` and source code.
+**1. Индексация документации (Запустить один раз)**
+Собирает векторный индекс из папки `docs/` и исходного кода для работы RAG.
 ```bash
 ./gradlew run --args="index"
 ```
 
-**2. Run AI Code Review**
-Analyzes the latest PR or a specific one.
+**2. Запуск AI Code Review**
+Анализирует последний открытый PR или конкретный PR по ссылке.
 ```bash
 ./gradlew run --args="review"
-# OR
+# ИЛИ
 ./gradlew run --args="review_pr https://github.com/Owner/Repo/pull/1"
 ```
 
-**3. Run Support Chat**
-Simulates a support session with a specific user context.
+**3. Запуск чата поддержки**
+Симулирует сессию поддержки с контекстом конкретного пользователя из CRM.
 ```bash
 ./gradlew run --args="support user_123"
 ```
 
-**4. Run Project Manager Agent** 🆕
-Starts an interactive session where you can manage the project using natural language.
-- Ask for project status ("What are the open tasks?")
-- Ask technical questions ("What is the logging policy?") - *Uses RAG*
-- Create tasks ("Create a high priority bugfix task for login")
+**4. Запуск AI Менеджера Проекта** 🆕
+Запускает интерактивную сессию в консоли, где вы можете управлять проектом на естественном языке. Агент использует паттерн **ReAct** (Reasoning + Acting) и обладает памятью контекста.
+
+**Что умеет менеджер:**
+- 📊 **Статус проекта**: Спрашивайте "Какие задачи сейчас открыты?", "Есть ли срочные баги?". Агент проверит Issues и PR в GitHub.
+- 📝 **Управление задачами**: "Создай задачу на рефакторинг с высоким приоритетом". Агент сам сформирует и создаст Issue в GitHub.
+- 📚 **База знаний (RAG)**: "Можно ли использовать println?", "Какие правила именования переменных?". Агент найдет ответ в `docs/`.
+- 🧠 **Контекст**: Агент помнит нить разговора. Можно спросить "Какие задачи открыты?", а следующим сообщением — "Над чем из этого стоит поработать в первую очередь?".
+
 ```bash
 ./gradlew run --args="manage"
 ```
 
-## 🏗️ Architecture
+## 🏗️ Архитектура
 
-- **Main.kt**: Entry point, initializes clients and routes commands.
+- **Main.kt**: Точка входа. Инициализирует сервисы, RAG-индекс и маршрутизирует команды CLI.
 - **MCP Servers**:
-    - `DeveloperAssistantMCPServer`: Tools for docs (RAG) and git diffs.
-    - `SupportMCPServer`: Tools for CRM data access.
-    - `ManageMCPServer`: Tools for GitHub project management (Issues, PRs).
-- **AI Client**: `YandexGPTClient` for chat and tool execution.
+    - `DeveloperAssistantMCPServer`: Инструменты для работы с документацией (RAG) и анализа кода.
+    - `SupportMCPServer`: Инструменты для доступа к CRM (mock-данные пользователей).
+    - `ManageMCPServer`: Инструменты управления проектом GitHub (Get Issues, Create Task).
+- **AI Client**: `YandexGPTClient` для общения с LLM и выполнения инструментов (Function Calling).
 
-## 📜 Rules & Policies
-See `docs/Documentation.md` for coding standards enforced by the AI Reviewer.
+## 📜 Правила и Политики
+Смотрите `docs/Documentation.md` для ознакомления со стандартами кодирования, которые проверяет AI Reviewer.
