@@ -32,18 +32,26 @@ class ManageMCPServer(
                 val issues = gitHubClient.listIssues(owner, repo)
                 val prsJson = gitHubClient.listPullRequests(owner, repo)
                 
-                // Parse PRs just to count them or get basic info, here we simplify
                 val prsCount = Regex("\"number\"").findAll(prsJson).count()
+                
+                // GitHub API returns PRs as Issues too. We need to filter them out if possible, 
+                // or just be aware. Ideally, check if 'pull_request' field exists in issue json, 
+                // but our simple DTO might not have it. 
+                // Let's rely on the fact that we list PRs separately.
+                // A better way is to filter issues that are NOT PRs if DTO supported it.
+                // For now, let's just clearly label them in the output.
                 
                 val statusReport = buildString {
                     append("📊 Project Status for $owner/$repo\n")
                     append("--------------------------------\n")
-                    append("Open PRs: $prsCount\n")
-                    append("Open Issues: ${issues.size}\n\n")
+                    append("Open PRs (Count): $prsCount\n")
+                    append("Open Issues (All items including PRs): ${issues.size}\n\n")
                     
                     issues.forEach { issue ->
-                        val labels = issue.labels.joinToString { it.name }
-                        append("- [#${issue.number}] ${issue.title} (Labels: $labels)\n")
+                        // Simple heuristic: if html_url contains "pull", it's a PR
+                        val type = if (issue.html_url.contains("/pull/")) "[PR]" else "[ISSUE]"
+                        val labels = if (issue.labels.isEmpty()) "No labels" else issue.labels.joinToString { it.name }
+                        append("- $type [#${issue.number}] ${issue.title} (Labels: $labels)\n")
                     }
                 }
                 statusReport
@@ -53,11 +61,10 @@ class ManageMCPServer(
                 val description = params["description"] as? String ?: ""
                 val priority = params["priority"] as? String ?: "medium"
                 
-                // Map priority to labels
                 val labels = mutableListOf("ai-task")
                 when (priority.lowercase()) {
-                    "high", "critical" -> labels.add("priority:high")
-                    "low" -> labels.add("priority:low")
+                    "high", "critical", "высокий" -> labels.add("priority:high")
+                    "low", "низкий" -> labels.add("priority:low")
                     else -> labels.add("priority:medium")
                 }
                 
