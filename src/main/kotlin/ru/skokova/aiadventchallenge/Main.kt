@@ -4,6 +4,7 @@ import ru.skokova.aiadventchallenge.mcp.DeveloperAssistantMCPServer
 import ru.skokova.aiadventchallenge.mcp.SupportMCPServer
 import ru.skokova.aiadventchallenge.mcp.ManageMCPServer
 import ru.skokova.aiadventchallenge.ai.YandexGPTClient
+import ru.skokova.aiadventchallenge.ai.Message
 import ru.skokova.aiadventchallenge.git.GitClient
 import ru.skokova.aiadventchallenge.git.GitHubClient
 import ru.skokova.aiadventchallenge.rag.client.YandexEmbeddingClient
@@ -112,16 +113,11 @@ suspend fun runManageChat(
     println("I can help you with Project Status, Tasks, and Priorities.")
     println("Ask me anything! (e.g. 'What is the project status?', 'Create a task for bugfix')\n")
 
-    var conversationContext = ""
+    val history = mutableListOf<Message>()
+    var summary = ""
+    val MAX_HISTORY_MESSAGES = 10
 
-    while (true) {
-        print("👔 Manager: ")
-        val input = scanner.nextLine().trim()
-        if (input.lowercase() == "exit") break
-        if (input.isBlank()) continue
-
-        // ReAct Loop Prompt
-        val systemPrompt = """
+    val baseSystemPrompt = """
             You are an AI Team Lead. You have access to tools.
             
             TOOLS:
@@ -137,25 +133,35 @@ suspend fun runManageChat(
             EXAMPLES:
             User: "Check status"
             Bot: {"tool": "get_project_status", "params": {}}
-            
-            User: "Create task 'Fix bug' with high priority"
-            Bot: {"tool": "create_task", "params": {"title": "Fix bug", "description": "Fix the bug", "priority": "high"}}
-            
-            Current Context:
-            $conversationContext
-        """.trimIndent()
+    """.trimIndent()
 
-        // 1. LLM Decision
-        val llmResponse = gptClient.chat(systemPrompt, input, model = "yandexgpt")
+    while (true) {
+        print("👔 Manager: ")
+        val input = scanner.nextLine().trim()
+        if (input.lowercase() == "exit") break
+        if (input.isBlank()) continue
+
+        // 1. Build Request Context
+        val currentMessages = mutableListOf<Message>()
+        val systemContent = if (summary.isNotEmpty()) {
+            "$baseSystemPrompt\n\n=== MEMORY/SUMMARY ===\n$summary"
+        } else {
+            baseSystemPrompt
+        }
         
-        // Robust JSON extraction: look for {...} block
+        currentMessages.add(Message("system", systemContent))
+        currentMessages.addAll(history)
+        currentMessages.add(Message("user", input))
+
+        // 2. LLM Decision (ReAct Step 1)
+        var llmResponse = gptClient.chat(currentMessages)
+        
+        // Robust JSON extraction
         val jsonMatch = Regex("""\{.*\}""", RegexOption.DOT_MATCHES_ALL).find(llmResponse)
         
-        // 2. Check for Tool Call
         if (jsonMatch != null && llmResponse.contains("\"tool\"")) {
             val jsonString = jsonMatch.value
             try {
-                // Manual Parse
                 val toolNameMatch = Regex(""""tool":\s*"(.*?)"""").find(jsonString)
                 val toolName = toolNameMatch?.groupValues?.get(1)
                 
@@ -182,30 +188,54 @@ suspend fun runManageChat(
                         }
                         else -> "Error: Unknown tool"
                     }
+                    println("✅ Tool Result Summary: ${result.take(100)}...")
+
+                    // Add Tool interactions to temporary request context for final answer
+                    currentMessages.add(Message("assistant", llmResponse))
+                    currentMessages.add(Message("user", "Tool Output:\n$result\n\nNow provide a helpful answer to the original user request based on this."))
                     
-                    println("✅ Tool Result:\n$result\n")
-                    
-                    // 3. Final Answer Generation
-                    val finalPrompt = """
-                        User: "$input"
-                        Tool Output:
-                        $result
-                        
-                        Summarize this for the user.
-                    """.trimIndent()
-                    
-                    val finalResponse = gptClient.chat(systemPrompt, finalPrompt, model = "yandexgpt")
-                    println("🤖 Bot: $finalResponse\n")
-                    conversationContext += "\nUser: $input\nTool: $toolName\n"
+                    // ReAct Step 2 (Final Answer)
+                    llmResponse = gptClient.chat(currentMessages)
                 }
             } catch (e: Exception) {
                 println("❌ Error executing tool plan: ${e.message}")
-                println("Raw: $llmResponse")
             }
-        } else {
-            // Direct answer
-            println("🤖 Bot: $llmResponse\n")
-            conversationContext += "\nUser: $input\nBot: $llmResponse\n"
+        }
+
+        // 3. Output and Update History
+        println("🤖 Bot: $llmResponse\n")
+        
+        history.add(Message("user", input))
+        history.add(Message("assistant", llmResponse))
+        
+        // 4. History Compression
+        if (history.size >= MAX_HISTORY_MESSAGES) {
+             println("🧹 Compressing history (size: ${history.size})...")
+             // Keep last 2 messages (latest Q&A)
+             val toKeep = history.takeLast(2)
+             val toSummarize = history.dropLast(2)
+             
+             val textToCompress = toSummarize.joinToString("\n") { "${it.role}: ${it.text}" }
+             val summaryPrompt = """
+                 Summarize the following conversation history into a concise paragraph. 
+                 Keep key facts, current tasks, and status.
+                 
+                 History:
+                 $textToCompress
+                 
+                 Previous Summary:
+                 $summary
+             """.trimIndent()
+             
+             try {
+                 val newSummary = gptClient.chat("You are a summarizer.", summaryPrompt)
+                 summary = newSummary
+                 history.clear()
+                 history.addAll(toKeep)
+                 println("✅ History compressed. New Summary: ${summary.take(50)}...")
+             } catch (e: Exception) {
+                 logger.error("Failed to compress history", e)
+             }
         }
     }
 }
