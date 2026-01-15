@@ -1,102 +1,81 @@
-# 🎄 AI Advent Challenge: Day 21 - AI Code Reviewer
+# 🎄 AI Advent Challenge: Day 22 - AI Support Assistant
 
-Автоматический AI-агент для ревью кода, построенный на базе **MCP** (Model Context Protocol) и **RAG** (Retrieval Augmented Generation). Агент анализирует изменения в коде (локальные или PR на GitHub), сверяет их с документацией проекта и стандартами кодирования, и выдает структурированный отчет с замечаниями.
+Интеллектуальный ассистент технической поддержки, который объединяет знания из документации (RAG) с контекстом клиента из CRM (MCP).
 
 ---
 
-## 🚀 Основные возможности
+## 🚀 Новые возможности (Day 22)
 
-*   **Гибридный пайплайн**: Объединяет Git-инструменты, RAG-поиск и LLM анализ.
-*   **Два режима работы**:
-    *   🕵️ **Local Review**: Анализ незакоммиченных изменений (`git diff`) в текущей директории.
-    *   🌐 **Remote PR Review**: Анализ Pull Request-ов с GitHub по URL.
-*   **Умный RAG**:
-    *   Индексирует не только документацию (`docs/`), но и кодовую базу (`src/`).
-    *   Динамически подбирает контекст на основе ключевых слов из diff-а.
-*   **Strict Policy Checking**:
-    *   Агент обучен ссылаться на конкретные пункты правил (Rule ID) из документации.
-    *   Указывает файл и **строки** источника правил при обнаружении нарушений.
+*   **🛒 CRM Integration**: Агент "знает", с кем общается.
+    *   Считывает профиль пользователя: тариф (PRO/FREE), ОС, IDE, история обращений.
+    *   Персонализирует ответы (например, учитывает операционную систему пользователя при советах).
+    *   Реализует сценарии Upsell: если пользователь на бесплатном тарифе спрашивает про PRO-функции, агент предложит обновление.
+*   **📚 RAG Knowledge Base**:
+    *   Отвечает на вопросы по продукту, используя обновленный `docs/UserFAQ.md`.
+    *   Поддерживает мультиязычный поиск (добавлены ключевые слова на русском).
+*   **💬 Interactive Chat**:
+    *   Режим живого диалога в консоли (REPL).
+    *   Автоматический подбор контекста из базы знаний под каждый вопрос.
 
 ---
 
 ## 🛠 Архитектура
 
-Проект реализован на **Kotlin** и состоит из следующих компонентов:
-
-1.  **MCP Server (`DeveloperAssistantMCPServer`)**:
-    *   Центральный узел, предоставляющий инструменты для агента.
-    *   `get_pr_diff` / `fetch_github_pr_diff`: Получение изменений кода.
-    *   `ask_project_docs`: Интерфейс к RAG-системе.
-
-2.  **RAG System (`ru.skokova.aiadventchallenge.rag`)**:
-    *   **Indexer**: Сканирует `.md` и `.kt` файлы, разбивает на чанки.
-    *   **Vector Search**: Использует Yandex Embeddings для поиска релевантных правил.
-
-3.  **AI Integration (`YandexGPTClient`)**:
-    *   Прямая интеграция с Yandex Cloud (YandexGPT Pro).
-    *   Специализированный системный промпт для роли "Senior Kotlin Reviewer".
+1.  **Support MCP Server**:
+    *   Интеграция с локальной "CRM" (файл `crm/users.json`).
+    *   Инструменты: `get_user_details`, `get_user_history`.
+2.  **RAG System**:
+    *   Индексирует `docs/UserFAQ.md` для поиска ответов на частые вопросы.
+3.  **Main Pipeline**:
+    *   Комбинирует три источника контекста в один промпт для LLM:
+        1.  **CRM**: "Кто спрашивает?" (Плагин, ОС, История)
+        2.  **RAG**: "Что мы знаем об этом?" (FAQ)
+        3.  **History**: "О чем мы только что говорили?"
 
 ---
 
-## ⚙️ Настройка
+## ▶️ Как запустить
 
-Для работы требуются ключи API. Создайте файл `local.properties` в корне проекта (или используйте переменные окружения):
-
-```properties
-# Yandex Cloud (Required for LLM & Embeddings)
-YANDEX_API_KEY=your_yandex_api_key
-YANDEX_FOLDER_ID=your_folder_id
-
-# GitHub (Required only for Remote PR Review)
-GITHUB_TOKEN=your_github_token
-```
-
----
-
-## ▶️ Запуск и Использование
-
-### 1. Индексация (Подготовка)
-Перед первым запуском необходимо проиндексировать документацию и код, чтобы агент "выучил" правила:
+### 1. Подготовка (Индексация)
+Обязательно обновите индекс перед запуском, чтобы подгрузить новый FAQ:
 
 ```bash
 ./gradlew run --args="index"
 ```
-*Сканирует папки `docs/` и `src/main/kotlin`, создаёт файл `rag_index.json`.*
 
-### 2. Локальное ревью (Local Diff)
-Анализирует текущие изменения в рабочей директории (то, что покажет `git diff`):
+### 2. Запуск Чата Поддержки
+Запустите ассистента, указав ID пользователя (из `crm/users.json`):
 
+**Сценарий А: Опытный разработчик (PRO)**
 ```bash
-./gradlew run --args="review"
+./gradlew run --args="support user_dev"
 ```
+*   **Контекст:** MacOS, IntelliJ IDEA, PRO план.
+*   **Пример вопроса:** "Как пофиксить ошибку авторизации?"
+*   **Ожидаемое поведение:** Агент даст технический совет, ссылаясь на переменные окружения.
 
-### 3. Ревью Pull Request (GitHub)
-Анализирует внешний PR по ссылке:
-
+**Сценарий Б: Новичок (FREE)**
 ```bash
-./gradlew run --args="review_pr https://github.com/VeraSkokova/AI-Advent-Challenge-MCP/pull/1"
+./gradlew run --args="support user_newbie"
 ```
+*   **Контекст:** Windows, VS Code, FREE план.
+*   **Пример вопроса:** "Как запустить ревью чужого PR с гитхаба?"
+*   **Ожидаемое поведение:** Агент объяснит, что эта функция доступна только в PRO версии (согласно FAQ) и предложит обновиться.
 
 ---
 
-## 📂 Структура реализации (Day 21)
+## 📂 Структура данных
 
-*   `src/main/kotlin/ru/skokova/aiadventchallenge/Main.kt` — Точка входа, реализация CLI пайплайна.
-*   `src/main/kotlin/ru/skokova/aiadventchallenge/mcp/DeveloperAssistantMCPServer.kt` — Локальный MCP сервер с инструментами.
-*   `src/main/kotlin/ru/skokova/aiadventchallenge/git/GitHubClient.kt` — Клиент для получения raw diff с GitHub.
-*   `docs/Documentation.md` — Пример документации со стандартами кодирования (для тестирования RAG).
+*   `crm/users.json` — JSON-файл с данными клиентов (имитация API CRM).
+*   `docs/UserFAQ.md` — База знаний с частыми вопросами и решениями проблем.
+*   `src/main/kotlin/ru/skokova/aiadventchallenge/mcp/SupportMCPServer.kt` — Реализация MCP сервера для CRM.
 
 ---
 
-### Пример отчета агента:
+## 🕵️ Режим Code Review (Day 21)
+Функционал предыдущего дня (AI Code Reviewer) сохранен и доступен:
 
-```markdown
-## 🚨 Violations Found
-
-### [LOG-001] Logging Policy
-**Source:** `Documentation.md:5-8`
-**Violation:** The code uses `println` for logging secrets, which is strictly forbidden.
-**Fix:**
-// Use Logger instead
-logger.info("...")
+```bash
+./gradlew run --args="review"        # Локальное ревью
+./gradlew run --args="review_pr ..." # Ревью GitHub PR
 ```
