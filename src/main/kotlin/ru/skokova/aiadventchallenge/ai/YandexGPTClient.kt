@@ -31,7 +31,7 @@ data class CompletionOptions(
 @Serializable
 data class Message(
     val role: String,
-    val text: String? = "" // Made nullable with default empty string
+    val text: String? = ""
 )
 
 @Serializable
@@ -59,7 +59,7 @@ class YandexGPTClient(
         install(ContentNegotiation) {
             json(Json { 
                 ignoreUnknownKeys = true 
-                coerceInputValues = true // Help with nulls/defaults
+                coerceInputValues = true 
                 prettyPrint = true
             })
         }
@@ -72,16 +72,23 @@ class YandexGPTClient(
     }
 
     suspend fun chat(systemPrompt: String, userPrompt: String, model: String = "yandexgpt"): String {
+        return chat(
+            messages = listOf(
+                Message(role = "system", text = systemPrompt),
+                Message(role = "user", text = userPrompt)
+            ),
+            model = model
+        )
+    }
+
+    suspend fun chat(messages: List<Message>, model: String = "yandexgpt"): String {
         val modelUri = "gpt://$folderId/$model/latest"
         val url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
 
         val requestBody = CompletionRequest(
             modelUri = modelUri,
             completionOptions = CompletionOptions(),
-            messages = listOf(
-                Message(role = "system", text = systemPrompt),
-                Message(role = "user", text = userPrompt)
-            )
+            messages = messages
         )
 
         return try {
@@ -91,11 +98,10 @@ class YandexGPTClient(
                 setBody(requestBody)
             }.body()
 
-            // Handle potential null text
             val text = response.result.alternatives.firstOrNull()?.message?.text
             if (text.isNullOrBlank()) {
                 logger.warn("Received empty or null text from YandexGPT")
-                "..." // Return fallback string to avoid crash
+                "..." 
             } else {
                 text
             }
