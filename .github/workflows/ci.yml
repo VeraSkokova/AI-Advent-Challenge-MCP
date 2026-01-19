@@ -1,0 +1,39 @@
+name: Build and Package MCP Server
+
+on:
+  push:
+    branches: [ "day24", "main" ]
+  pull_request:
+    branches: [ "day24" ]
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+
+    - name: Build with Gradle
+      # 'build' runs tests and compiles code
+      # 'distZip' creates the distribution archive in build/distributions
+      run: ./gradlew build distZip
+
+    - name: Upload Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: mcp-server-release
+        path: build/distributions/*.zip
+        retention-days: 5
