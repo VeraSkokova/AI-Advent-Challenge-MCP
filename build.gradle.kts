@@ -15,14 +15,18 @@ dependencies {
     // MCP SDK
     implementation("io.modelcontextprotocol:kotlin-sdk:0.7.4")
     
-    // Ktor Client для Yandex GPT API и CoinCap
+    // Ktor Client for Yandex GPT API and CoinCap
     implementation("io.ktor:ktor-client-core:3.0.0")
     implementation("io.ktor:ktor-client-cio:3.0.0")
     implementation("io.ktor:ktor-client-content-negotiation:3.0.0")
     implementation("io.ktor:ktor-client-logging:3.0.0")
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.0")
     
-    // ВАЖНО: Добавляем недостающий плагин для HttpTimeout
+    // Ktor Server for 'server' mode
+    implementation("io.ktor:ktor-server-core:3.0.0")
+    implementation("io.ktor:ktor-server-netty:3.0.0")
+    
+    // IMPORTANT: Add missing plugin for HttpTimeout
     implementation("io.ktor:ktor-client-plugins:3.0.0")
     
     // Coroutines
@@ -35,7 +39,7 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.9")
     implementation("ch.qos.logback:logback-classic:1.4.14")
     
-    // Cron Utils для парсинга cron выражений
+    // Cron Utils for parsing cron expressions
     implementation("com.cronutils:cron-utils:9.2.1")
     
     testImplementation(kotlin("test"))
