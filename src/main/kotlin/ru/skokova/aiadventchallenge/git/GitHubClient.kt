@@ -128,11 +128,14 @@ class GitHubClient(private val token: String?) {
 
     suspend fun downloadArtifact(url: String, destination: File) {
         val response: HttpResponse = client.get(url) {
+            header(HttpHeaders.Authorization, "Bearer ${getToken()}")
+            header(HttpHeaders.Accept, "application/vnd.github+json")
             timeout {
-                requestTimeoutMillis = 600_000 // 10 минут только на скачивание артефакта
+                requestTimeoutMillis = 600_000
                 socketTimeoutMillis = 600_000
             }
         }
+
         val channel: ByteReadChannel = response.bodyAsChannel()
         destination.outputStream().use { out ->
             channel.copyTo(out)
