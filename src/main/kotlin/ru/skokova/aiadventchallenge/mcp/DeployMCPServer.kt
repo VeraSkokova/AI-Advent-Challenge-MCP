@@ -110,7 +110,7 @@ class DeployMCPServer(
         // Для кросс-платформенности ищем оба, но приоритет отдаем тому, что подходит под ОС
         
         val isWindows = System.getProperty("os.name").lowercase().contains("win")
-        val scriptName = if (isWindows) "AI-Advent-Challenge-MCP.bat" else "AI-Advent-Challenge-MCP"
+        val scriptName = if (isWindows) "ai-advent-mcp.bat" else "ai-advent-mcp"
         
         val binScript = deployDir.walkTopDown().find { 
             it.name == scriptName && it.parentFile.name == "bin" 

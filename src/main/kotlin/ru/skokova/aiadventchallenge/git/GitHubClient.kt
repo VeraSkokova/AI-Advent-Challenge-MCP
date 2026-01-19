@@ -7,15 +7,18 @@ import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
 import io.ktor.client.request.*
-import io.ktor.client.statement.* 
+import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.jvm.javaio.copyTo
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 class GitHubClient(private val token: String?) {
     private val logger = LoggerFactory.getLogger(GitHubClient::class.java)
@@ -29,7 +32,7 @@ class GitHubClient(private val token: String?) {
     private fun getToken(): String = token ?: throw IllegalStateException("GITHUB_TOKEN not set")
 
     // --- Existing Issues/PR methods ---
-    
+
     suspend fun listIssues(owner: String, repo: String): List<Issue> {
         return try {
             client.get("https://api.github.com/repos/$owner/$repo/issues?state=open") {
@@ -38,7 +41,7 @@ class GitHubClient(private val token: String?) {
             }.body()
         } catch (e: Exception) { emptyList() }
     }
-    
+
     suspend fun listPullRequests(owner: String, repo: String): String {
         return try {
             client.get("https://api.github.com/repos/$owner/$repo/pulls?state=open") {
@@ -47,7 +50,7 @@ class GitHubClient(private val token: String?) {
             }.bodyAsText()
         } catch (e: Exception) { "[]" }
     }
-    
+
     suspend fun getPullRequestDiff(owner: String, repo: String, prNumber: Int): String {
         return try {
             client.get("https://api.github.com/repos/$owner/$repo/pulls/$prNumber") {
@@ -103,7 +106,7 @@ class GitHubClient(private val token: String?) {
             null
         }
     }
-    
+
     suspend fun getRun(owner: String, repo: String, runId: Long): WorkflowRun? {
         return try {
              client.get("https://api.github.com/repos/$owner/$repo/actions/runs/$runId") {
@@ -126,19 +129,38 @@ class GitHubClient(private val token: String?) {
         }
     }
 
-    suspend fun downloadArtifact(url: String, destination: File) {
-        val response: HttpResponse = client.get(url) {
-            header(HttpHeaders.Authorization, "Bearer ${getToken()}")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            timeout {
-                requestTimeoutMillis = 600_000
-                socketTimeoutMillis = 600_000
-            }
-        }
+    suspend fun downloadArtifact(url: String, destination: File) = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        // Шаг 1: Получаем ссылку на скачивание от GitHub (нужен токен)
+        val conn1 = URL(url).openConnection() as HttpURLConnection
+        conn1.instanceFollowRedirects = false // Сами обработаем редирект
+        conn1.setRequestProperty("Authorization", "Bearer ${getToken()}")
+        conn1.setRequestProperty("Accept", "application/vnd.github+json")
+        conn1.connect()
 
-        val channel: ByteReadChannel = response.bodyAsChannel()
-        destination.outputStream().use { out ->
-            channel.copyTo(out)
+        val responseCode = conn1.responseCode
+        val downloadUrl = if (responseCode in 300..399) {
+            conn1.getHeaderField("Location")
+        } else {
+            // Если GitHub сразу отдал файл (маловероятно) или ошибка
+            if (responseCode !in 200..299) {
+                throw RuntimeException("Failed to get artifact URL. HTTP $responseCode")
+            }
+            url
+        }
+        conn1.disconnect()
+
+        if (downloadUrl == null) throw RuntimeException("No Location header for redirect")
+
+        // Шаг 2: Качаем файл с Azure/S3 (токен НЕ нужен, он в URL)
+        val conn2 = URL(downloadUrl).openConnection() as HttpURLConnection
+        conn2.instanceFollowRedirects = true
+        conn2.connectTimeout = 60000
+        conn2.readTimeout = 300000 // 5 минут
+
+        conn2.inputStream.use { input ->
+            destination.outputStream().use { output ->
+                input.copyTo(output)
+            }
         }
     }
 }
