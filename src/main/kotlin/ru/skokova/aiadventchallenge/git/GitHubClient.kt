@@ -45,6 +45,17 @@ class GitHubClient(private val token: String?) {
             }.bodyAsText()
         } catch (e: Exception) { "[]" }
     }
+    
+    suspend fun getPullRequestDiff(owner: String, repo: String, prNumber: Int): String {
+        return try {
+            client.get("https://api.github.com/repos/$owner/$repo/pulls/$prNumber") {
+                header("Authorization", "Bearer ${getToken()}")
+                header("Accept", "application/vnd.github.v3.diff")
+            }.bodyAsText()
+        } catch (e: Exception) {
+            "Error fetching PR diff: ${e.message}"
+        }
+    }
 
     suspend fun createIssue(owner: String, repo: String, title: String, body: String, labels: List<String>): String {
         return try {
