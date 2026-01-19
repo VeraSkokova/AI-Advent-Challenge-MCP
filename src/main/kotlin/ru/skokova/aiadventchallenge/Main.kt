@@ -3,6 +3,7 @@ package ru.skokova.aiadventchallenge
 import ru.skokova.aiadventchallenge.mcp.DeveloperAssistantMCPServer
 import ru.skokova.aiadventchallenge.mcp.SupportMCPServer
 import ru.skokova.aiadventchallenge.mcp.ManageMCPServer
+import ru.skokova.aiadventchallenge.mcp.DeployMCPServer
 import ru.skokova.aiadventchallenge.ai.YandexGPTClient
 import ru.skokova.aiadventchallenge.ai.Message
 import ru.skokova.aiadventchallenge.git.GitClient
@@ -18,6 +19,11 @@ import java.io.File
 import org.slf4j.LoggerFactory
 import kotlin.system.exitProcess
 import java.util.Scanner
+import io.ktor.server.engine.*
+import io.ktor.server.netty.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+import io.ktor.server.application.*
 
 fun main(args: Array<String>) = runBlocking {
     val logger = LoggerFactory.getLogger("ReviewPipeline")
@@ -63,6 +69,7 @@ fun main(args: Array<String>) = runBlocking {
     }
     
     val manageMcpServer = ManageMCPServer(githubClient, repoOwner, repoName)
+    val deployMcpServer = DeployMCPServer(githubClient, repoOwner, repoName)
     
     // 2. Parse Command
     val command = args.firstOrNull() ?: "review" 
@@ -93,7 +100,20 @@ fun main(args: Array<String>) = runBlocking {
         }
         command == "manage" -> {
             logger.info("Starting Manager for $repoOwner/$repoName")
-            runManageChat(manageMcpServer, mcpServer, gptClient, logger)
+            runManageChat(manageMcpServer, devMcp = mcpServer, deployMcp = deployMcpServer, gptClient, logger)
+        }
+        command == "server" -> {
+            logger.info("🌍 Starting Local Web Server on port 8080...")
+            embeddedServer(Netty, port = 8080) {
+                routing {
+                    get("/") {
+                        call.respondText("🚀 AI Advent Challenge MCP Server is RUNNING! Deployed via GitHub Actions.")
+                    }
+                    get("/health") {
+                        call.respondText("OK")
+                    }
+                }
+            }.start(wait = true)
         }
         else -> {
             logger.error("Unknown command: $command.")
@@ -105,34 +125,36 @@ fun main(args: Array<String>) = runBlocking {
 suspend fun runManageChat(
     manageMcp: ManageMCPServer,
     devMcp: DeveloperAssistantMCPServer,
+    deployMcp: DeployMCPServer,
     gptClient: YandexGPTClient,
     logger: org.slf4j.Logger
 ) {
     val scanner = Scanner(System.`in`)
     println("\n🚀 AI Team Manager is ready!")
-    println("I can help you with Project Status, Tasks, and Priorities.")
-    println("Ask me anything! (e.g. 'What is the project status?', 'Create a task for bugfix')\n")
+    println("I can help you with Project Status, Tasks, Priorities AND DEPLOYMENTS.")
+    println("Ask me anything! (e.g. 'Deploy to localhost', 'What is the project status?')\n")
 
     val history = mutableListOf<Message>()
     var summary = ""
     val MAX_HISTORY_MESSAGES = 10
 
     val baseSystemPrompt = """
-            You are an AI Team Lead. You have access to tools.
+            You are an AI Team Lead and DevOps Engineer. You have access to tools.
             
             TOOLS:
             1. get_project_status: Get open issues/PRs.
             2. ask_project_docs: Search docs (RAG). Params: query
             3. create_task: Create Issue. Params: title, description, priority (low/medium/high)
+            4. deploy_to_localhost: Deploys the latest build to localhost. Params: branch (default 'day24')
             
             INSTRUCTIONS:
             - If you need a tool, output JSON: {"tool": "name", "params": {...}}
-            - If user asks to create a task, YOU MUST output the JSON for create_task.
+            - If user asks to deploy, call deploy_to_localhost.
             - Otherwise, answer with text.
             
             EXAMPLES:
-            User: "Check status"
-            Bot: {"tool": "get_project_status", "params": {}}
+            User: "Deploy to dev"
+            Bot: {"tool": "deploy_to_localhost", "params": {"branch": "day24"}}
     """.trimIndent()
 
     while (true) {
@@ -185,6 +207,11 @@ suspend fun runManageChat(
                                 "description" to (descMatch?.groupValues?.get(1) ?: ""),
                                 "priority" to (prioMatch?.groupValues?.get(1) ?: "medium")
                              ))
+                        }
+                        "deploy_to_localhost" -> {
+                            val branchMatch = Regex(""""branch":\s*"(.*?)"""").find(jsonString)
+                            val branch = branchMatch?.groupValues?.get(1) ?: "day24"
+                            deployMcp.executeTool("deploy_to_localhost", mapOf("branch" to branch))
                         }
                         else -> "Error: Unknown tool"
                     }
