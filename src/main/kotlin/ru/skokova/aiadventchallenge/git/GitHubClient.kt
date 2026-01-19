@@ -10,6 +10,8 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.* 
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.jvm.javaio.copyTo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -125,10 +127,16 @@ class GitHubClient(private val token: String?) {
     }
 
     suspend fun downloadArtifact(url: String, destination: File) {
-        val bytes: ByteArray = client.get(url) {
-            header("Authorization", "Bearer ${getToken()}")
-        }.body()
-        destination.writeBytes(bytes)
+        val response: HttpResponse = client.get(url) {
+            timeout {
+                requestTimeoutMillis = 600_000 // 10 минут только на скачивание артефакта
+                socketTimeoutMillis = 600_000
+            }
+        }
+        val channel: ByteReadChannel = response.bodyAsChannel()
+        destination.outputStream().use { out ->
+            channel.copyTo(out)
+        }
     }
 }
 
