@@ -78,40 +78,63 @@ class DeployMCPServer(
             ?: return "❌ Artifact 'mcp-server-release' not found."
 
         val tempDir = createTempDirectory("mcp_deploy").toFile()
-        val zipFile = File(tempDir, "release.zip")
+        val downloadFile = File(tempDir, "artifact.zip")
         
-        logger.info("⬇️ Downloading artifact to ${zipFile.absolutePath}...")
-        gitHubClient.downloadArtifact(artifact.archive_download_url, zipFile)
+        logger.info("⬇️ Downloading artifact to ${downloadFile.absolutePath}...")
+        gitHubClient.downloadArtifact(artifact.archive_download_url, downloadFile)
 
         // 4. Unzip and Deploy
         val deployDir = File("deploy") // Local deploy folder in project root
         deployDir.deleteRecursively()
         deployDir.mkdirs()
 
-        logger.info("📂 Unzipping to ${deployDir.absolutePath}...")
-        unzip(zipFile, deployDir)
+        logger.info("📂 Unzipping outer artifact to ${deployDir.absolutePath}...")
+        unzip(downloadFile, deployDir)
+
+        // Handle nested ZIPs (Gradle distZip inside GitHub artifact zip)
+        val nestedZip = deployDir.walkTopDown().find { it.extension == "zip" }
+        if (nestedZip != null) {
+            logger.info("📦 Found nested distribution archive: ${nestedZip.name}. Unzipping...")
+            unzip(nestedZip, deployDir)
+            nestedZip.delete() // Cleanup zip
+        }
         
-        // Find the bin script (it's nested inside the unzipped folder structure)
-        val binScript = deployDir.walkTopDown().find { it.name == "AI-Advent-Challenge-MCP" && !it.name.endsWith(".bat") }
+        // Debug: List files
+        val fileList = deployDir.walkTopDown().map { it.relativeTo(deployDir).path }.joinToString(", ")
+        logger.info("📂 Files in deploy dir: $fileList")
+        
+        // Find the bin script (recursive search)
+        // Ищем файл, который:
+        // 1. Находится в папке bin/
+        // 2. Не имеет расширения .bat (для Unix) или имеет .bat (для Windows)
+        // Для кросс-платформенности ищем оба, но приоритет отдаем тому, что подходит под ОС
+        
+        val isWindows = System.getProperty("os.name").lowercase().contains("win")
+        val scriptName = if (isWindows) "AI-Advent-Challenge-MCP.bat" else "AI-Advent-Challenge-MCP"
+        
+        val binScript = deployDir.walkTopDown().find { 
+            it.name == scriptName && it.parentFile.name == "bin" 
+        }
         
         if (binScript == null) {
-            return "❌ Could not find executable script in artifact."
+            return "❌ Could not find executable script '$scriptName' in artifact. Files found: ${fileList.take(200)}..."
         }
         
         binScript.setExecutable(true)
 
         // 5. Start Server Process
-        logger.info("🚀 Starting deployed server...")
+        logger.info("🚀 Starting deployed server using ${binScript.absolutePath}...")
         try {
-            // Kill previous instance if needed (simplified: relying on OS or user to kill old one, 
-            // or just spawning a new one for demo)
-            // For a real scenario, we'd track the PID.
-            
             val logFile = File("deploy/server.log")
-            val process = ProcessBuilder(binScript.absolutePath, "server")
+            
+            val processBuilder = ProcessBuilder(binScript.absolutePath, "server")
                 .redirectOutput(logFile)
                 .redirectError(logFile)
-                .start()
+            
+            // Если Windows, нужно запускать через cmd /c, иначе может не подхватить bat
+            // Но обычно ProcessBuilder умеет запускать bat напрямую.
+            
+            val process = processBuilder.start()
                 
             return """
                 ✅ Deployment Successful!
@@ -121,10 +144,13 @@ class DeployMCPServer(
                 - Deployed to: ${deployDir.absolutePath}
                 - Server PID: ${process.pid()}
                 - Logs: ${logFile.absolutePath}
+                - Executable: ${binScript.name}
                 
                 The server is now running on localhost:8080 (check logs if not).
+                Try: curl http://localhost:8080/
             """.trimIndent()
         } catch (e: Exception) {
+            logger.error("Failed to start process", e)
             return "❌ Failed to start server process: ${e.message}"
         }
     }
